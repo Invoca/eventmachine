@@ -2313,7 +2313,7 @@ void EventMachine_t::_ReadInotifyEvents()
 		}
 		for (int current = 0;
 		     current < returned;
-		     current += sizeof(struct inotify_event) + event->len) {
+		     ) {
 
 			struct inotify_event* event = (struct inotify_event*)(buffer+current);
 			Files_t::const_iterator bindable = Files.find(event->wd);
@@ -2329,6 +2329,7 @@ void EventMachine_t::_ReadInotifyEvents()
 					UnwatchFile ((int)event->wd);
 				}
 			}
+			current += sizeof(struct inotify_event) + event->len;
 		}
 	}
 	#endif
