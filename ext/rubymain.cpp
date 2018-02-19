@@ -1285,6 +1285,7 @@ extern "C" void Init_rubyeventmachine()
 	rb_define_module_function (EmModule, "run_machine", (VALUE(*)(...))t_run_machine, 0);
 	rb_define_module_function (EmModule, "run_machine_without_threads", (VALUE(*)(...))t_run_machine, 0);
 	rb_define_module_function (EmModule, "add_oneshot_timer", (VALUE(*)(...))t_add_oneshot_timer, 1);
+	rb_define_module_function (EmModule, "get_real_time", (VALUE(*)(...))evma_get_real_time, 0);
 	rb_define_module_function (EmModule, "start_tcp_server", (VALUE(*)(...))t_start_server, 2);
 	rb_define_module_function (EmModule, "stop_tcp_server", (VALUE(*)(...))t_stop_server, 1);
 	rb_define_module_function (EmModule, "start_unix_server", (VALUE(*)(...))t_start_unix_server, 1);

@@ -107,6 +107,17 @@ extern "C" const uintptr_t evma_install_oneshot_timer (int seconds)
 }
 
 
+/*****************
+evma_get_real_time
+******************/
+
+extern "C" VALUE evma_get_real_time ()
+{
+	ensure_eventmachine("evma_get_real_time");
+	return INT2FIX(EventMachine->GetRealTime ());
+}
+
+
 /**********************
 evma_connect_to_server
 **********************/
