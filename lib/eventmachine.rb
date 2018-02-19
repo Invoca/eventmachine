@@ -969,13 +969,13 @@ module EventMachine
   # @private
   def self.run_deferred_callbacks
     until (@resultqueue ||= []).empty?
-      result,cback = @resultqueue.pop
-      cback.call result if cback
+      result, cback = @resultqueue.pop
+      cback.call(result)
     end
 
     # Capture the size at the start of this tick...
     size = @next_tick_mutex.synchronize { @next_tick_queue.size }
-    size.times do |i|
+    size.times do
       callback = @next_tick_mutex.synchronize { @next_tick_queue.shift }
       begin
         callback.call
@@ -1065,8 +1065,10 @@ module EventMachine
             break # Ruby 2.0 may fail at Queue.pop
           end
           result = op.call
-          @resultqueue << [result, cback]
-          EventMachine.signal_loopbreak
+          if cback
+            @resultqueue << [result, cback]
+            EventMachine.signal_loopbreak
+          end
         end
       end
       @threadpool << thread
