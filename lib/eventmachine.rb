@@ -1370,6 +1370,35 @@ module EventMachine
     end
   end
 
+  # Enable tick timing samples to be stored.
+  #
+  # @param [max_samples]          the maximum samples to be stored; others will be silently discarded
+  # @param [sample_probability]   random sampling probability factor between 0.0 and 1.0 (0.0 = never; 1.0 = always; 0.10 = 10% on average)
+  def self.enable_tick_timing(max_samples: 1_000, sample_probability: 1.0)
+    @tick_timing_max_samples = Integer(max_samples)
+    @tick_timing_sample_probability = sample_probability.to_f
+    if sample_probability > 0.0
+      @tick_timing = []
+    else
+      remove_instance_variable :@tick_timing
+    end
+  end
+
+  # Returns the current tick timing samples and resets samples to [].
+  #
+  # @result
+  #   Returns an array of samples.
+  #   Each sample is an array with the following entries
+  #     tick_type (integer enum such as EM::TimerFired, EM::ConnectionData, EM::ConnectionUnbound..EM::SslHandshakeCompleted)
+  #     callback that was called (symbol or proc)
+  #     start_tick_count in microseconds (as returned from EventMachine.get_real_time)
+  #     end_tick_count   in microseconds ( " " " " " ")
+  def self.get_tick_timing_samples
+    original_tick_timing = @tick_timing
+    @tick_timing = [] if instance_variable_defined?(:@tick_timing)
+    original_tick_timing || []
+  end
+
   # This method allows for direct writing of incoming data back out to another descriptor, at the C++ level in the reactor.
   # This is very efficient and especially useful for proxies where high performance is required. Propogating data from a server response
   # all the way up to Ruby, and then back down to the reactor to be sent back to the client, is often unnecessary and

@@ -439,6 +439,7 @@ void EventMachine_t::_UpdateTime()
 EventMachine_t::GetRealTime
 ***************************/
 
+// Returns a 64-bit integer tick count in microseconds.
 // Two great writeups of cross-platform monotonic time are at:
 // http://www.python.org/dev/peps/pep-0418
 // http://nadeausoftware.com/articles/2012/04/c_c_tip_how_measure_elapsed_real_time_benchmarking

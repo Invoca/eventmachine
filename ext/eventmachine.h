@@ -57,6 +57,7 @@ extern "C" {
 	void evma_run_machine();
 	void evma_release_library();
 	const size_t evma_get_timer_count ();
+	VALUE evma_get_real_time ();
 	const uintptr_t evma_install_oneshot_timer (uint64_t milliseconds);
 	const uintptr_t evma_connect_to_server (const char *bind_addr, int bind_port, const char *server, int port);
 	const uintptr_t evma_connect_to_unix_server (const char *server);
