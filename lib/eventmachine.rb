@@ -73,7 +73,7 @@ module EventMachine
   class << self
     # Exposed to allow joining on the thread, when run in a multithreaded
     # environment. Performing other actions on the thread has undefined
-    # semantics (read: a dangerous endevor).
+    # semantics (read: a dangerous endeavor).
     #
     # @return [Thread]
     attr_reader :reactor_thread
@@ -960,10 +960,10 @@ module EventMachine
   end
 
   # The is the responder for the loopback-signalled event.
-  # It can be fired either by code running on a separate thread ({EventMachine.defer}) or on
-  # the main thread ({EventMachine.next_tick}).
-  # It will often happen that a next_tick handler will reschedule itself. We
-  # consume a copy of the tick queue so that tick events scheduled by tick events
+  # Loopbacks are signalled by EventMachine.defer when it has results to post back, or from
+  # the main thread when EventMachine.next_tick is called.
+  # It will often happen that a next_tick handler will reschedule itself. We only work
+  # the tick queue entries that were there when we started; new tick events scheduled by tick events
   # have to wait for the next pass through the reactor core.
   #
   # @private
@@ -1107,7 +1107,6 @@ module EventMachine
   #
   # @param [#call] pr A callable object to run
   def self.next_tick pr=nil, &block
-    # This works by adding to the @resultqueue that's used for #defer.
     # The general idea is that next_tick is used when we want to give the reactor a chance
     # to let other operations run, either to balance the load out more evenly, or to let
     # outbound network buffers drain, or both. So we probably do NOT want to block, and
