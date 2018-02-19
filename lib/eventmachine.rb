@@ -967,13 +967,13 @@ module EventMachine
   # @private
   def self.run_deferred_callbacks
     until (@resultqueue ||= []).empty?
-      result,cback = @resultqueue.pop
-      cback.call result if cback
+      result, cback = @resultqueue.pop
+      cback.call(result)
     end
 
     # Capture the size at the start of this tick...
     size = @next_tick_mutex.synchronize { @next_tick_queue.size }
-    size.times do |i|
+    size.times do
       callback = @next_tick_mutex.synchronize { @next_tick_queue.shift }
       begin
         callback.call
@@ -1076,7 +1076,9 @@ module EventMachine
           end
           begin
             result = op.call
-            @resultqueue << [result, cback]
+            if cback
+              @resultqueue << [result, cback]
+            end
           rescue Exception => error
             raise error unless eback
             @resultqueue << [error, eback]
