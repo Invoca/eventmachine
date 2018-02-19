@@ -53,6 +53,9 @@ static VALUE Intern_at_signature;
 static VALUE Intern_at_timers;
 static VALUE Intern_at_conns;
 static VALUE Intern_at_error_handler;
+static VALUE Intern_at_tick_timing_max_samples;
+static VALUE Intern_at_tick_timing_sample_probability;
+static VALUE Intern_at_tick_timing;
 static VALUE Intern_event_callback;
 static VALUE Intern_run_deferred_callbacks;
 static VALUE Intern_delete;
@@ -88,7 +91,7 @@ static inline VALUE ensure_conn(const uintptr_t signature)
 t_event_callback
 ****************/
 
-static inline void event_callback (struct em_event* e)
+static inline VALUE event_callback (struct em_event* e)
 {
 	const uintptr_t signature = e->signature;
 	int event = e->event;
@@ -102,40 +105,40 @@ static inline void event_callback (struct em_event* e)
 			if (conn == Qnil)
 				rb_raise (EM_eConnectionNotBound, "received %lu bytes of data for unknown signature: %lu", data_num, signature);
 			rb_funcall (conn, Intern_receive_data, 1, rb_str_new (data_str, data_num));
-			return;
+			return ID2SYM(Intern_receive_data);
 		}
 		case EM_CONNECTION_ACCEPTED:
 		{
 			rb_funcall (EmModule, Intern_event_callback, 3, BSIG2NUM(signature), INT2FIX(event), ULONG2NUM(data_num));
-			return;
+			return ID2SYM(Intern_event_callback);
 		}
 		case EM_CONNECTION_UNBOUND:
 		{
 			rb_funcall (EmModule, Intern_event_callback, 3, BSIG2NUM(signature), INT2FIX(event), ULONG2NUM(data_num));
-			return;
+			return ID2SYM(Intern_event_callback);
 		}
 		case EM_CONNECTION_COMPLETED:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_connection_completed, 0);
-			return;
+			return ID2SYM(Intern_connection_completed);
 		}
 		case EM_CONNECTION_NOTIFY_READABLE:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_notify_readable, 0);
-			return;
+			return ID2SYM(Intern_notify_readable);
 		}
 		case EM_CONNECTION_NOTIFY_WRITABLE:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_notify_writable, 0);
-			return;
+			return ID2SYM(Intern_notify_writable);
 		}
 		case EM_LOOPBREAK_SIGNAL:
 		{
 			rb_funcall (EmModule, Intern_run_deferred_callbacks, 0);
-			return;
+			return ID2SYM(Intern_run_deferred_callbacks);
 		}
 		case EM_TIMER_FIRED:
 		{
@@ -146,15 +149,16 @@ static inline void event_callback (struct em_event* e)
 				/* Timer Canceled */
 			} else {
 				rb_funcall (timer, Intern_call, 0);
+				return timer;
 			}
-			return;
+			return Qnil;
 		}
 		#ifdef WITH_SSL
 		case EM_SSL_HANDSHAKE_COMPLETED:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_ssl_handshake_completed, 0);
-			return;
+			return ID2SYM(Intern_ssl_handshake_completed);
 		}
 		case EM_SSL_VERIFY:
 		{
@@ -162,22 +166,23 @@ static inline void event_callback (struct em_event* e)
 			VALUE should_accept = rb_funcall (conn, Intern_ssl_verify_peer, 1, rb_str_new(data_str, data_num));
 			if (RTEST(should_accept))
 				evma_accept_ssl_peer (signature);
-			return;
+			return ID2SYM(Intern_ssl_verify_peer);
 		}
 		#endif
 		case EM_PROXY_TARGET_UNBOUND:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_proxy_target_unbound, 0);
-			return;
+			return ID2SYM(Intern_proxy_target_unbound);
 		}
 		case EM_PROXY_COMPLETED:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_proxy_completed, 0);
-			return;
+			return ID2SYM(Intern_proxy_completed);
 		}
 	}
+	return Qnil;
 }
 
 /*******************
@@ -190,22 +195,56 @@ static void event_error_handler(VALUE self UNUSED, VALUE err)
 	rb_funcall (error_handler, Intern_call, 1, err);
 }
 
+/*******************
+event_tick_timing
+*******************/
+
+static void event_tick_timing (int tick_type, VALUE callback_sym, VALUE before_tick_count, VALUE after_tick_count)
+{
+	if (rb_ivar_defined(EmModule, Intern_at_tick_timing)) {
+		VALUE tick_timing_array = rb_ivar_get (EmModule, Intern_at_tick_timing);
+
+		long max_samples = NUM2INT(rb_ivar_get (EmModule, Intern_at_tick_timing_max_samples));
+
+		if (RARRAY_LEN(tick_timing_array) >= max_samples)
+			return;
+
+		double probability = NUM2DBL(rb_ivar_get (EmModule, Intern_at_tick_timing_sample_probability));
+		double r = rand()/(RAND_MAX + 1.0);
+		if (r >= probability) {
+			return;
+		}
+
+		VALUE timing_tuple[] = { INT2FIX(tick_type), callback_sym, before_tick_count, after_tick_count };
+		VALUE timing_tuple_array = rb_ary_new_from_values (sizeof(timing_tuple)/sizeof(timing_tuple[0]), timing_tuple);
+		rb_ary_push (tick_timing_array, timing_tuple_array);
+    }
+}
+
 /**********************
 event_callback_wrapper
 **********************/
 
-static void event_callback_wrapper (const uintptr_t signature, int event, const char *data_str, const unsigned long data_num)
+static void event_callback_wrapper (const uintptr_t signature, int tick_type, const char *data_str, const unsigned long data_num)
 {
 	struct em_event e;
 	e.signature = signature;
-	e.event = event;
+	e.event = tick_type;
 	e.data_str = data_str;
 	e.data_num = data_num;
 
+    uint64_t before_tick_count = evma_get_real_time();
+
+    VALUE callback_sym = Qnil;
+
 	if (!rb_ivar_defined(EmModule, Intern_at_error_handler))
-		event_callback(&e);
+		callback_sym = event_callback(&e);
 	else
-		rb_rescue((VALUE (*)(ANYARGS))event_callback, (VALUE)&e, (VALUE (*)(ANYARGS))event_error_handler, Qnil);
+		callback_sym = rb_rescue((VALUE (*)(ANYARGS))event_callback, (VALUE)&e, (VALUE (*)(ANYARGS))event_error_handler, Qnil);
+
+    uint64_t after_tick_count = evma_get_real_time();
+
+    event_tick_timing (tick_type, callback_sym, before_tick_count, after_tick_count);
 }
 
 /**************************
@@ -1254,6 +1293,9 @@ extern "C" void Init_rubyeventmachine()
 	Intern_at_timers = rb_intern ("@timers");
 	Intern_at_conns = rb_intern ("@conns");
 	Intern_at_error_handler = rb_intern("@error_handler");
+	Intern_at_tick_timing_max_samples = rb_intern("@tick_timing_max_samples");
+	Intern_at_tick_timing_sample_probability = rb_intern("@tick_timing_sample_probability");
+	Intern_at_tick_timing = rb_intern("@tick_timing");
 
 	Intern_event_callback = rb_intern ("event_callback");
 	Intern_run_deferred_callbacks = rb_intern ("run_deferred_callbacks");
