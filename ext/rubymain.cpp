@@ -1411,18 +1411,5 @@ extern "C" void Init_rubyeventmachine()
 
 	rb_define_method (EmConnection, "get_outbound_data_size", (VALUE(*)(...))conn_get_outbound_data_size, 0);
 	rb_define_method (EmConnection, "associate_callback_target", (VALUE(*)(...))conn_associate_callback_target, 1);
-
-	rb_define_const (EmModule, "TimerFired", INT2NUM(100));
-	rb_define_const (EmModule, "ConnectionData", INT2NUM(101));
-	rb_define_const (EmModule, "ConnectionUnbound", INT2NUM(102));
-	rb_define_const (EmModule, "ConnectionAccepted", INT2NUM(103));
-	rb_define_const (EmModule, "ConnectionCompleted", INT2NUM(104));
-	rb_define_const (EmModule, "LoopbreakSignalled", INT2NUM(105));
-
-	rb_define_const (EmModule, "ConnectionNotifyReadable", INT2NUM(106));
-	rb_define_const (EmModule, "ConnectionNotifyWritable", INT2NUM(107));
-
-	rb_define_const (EmModule, "SslHandshakeCompleted", INT2NUM(108));
-
 }
 

@@ -70,6 +70,28 @@ require 'resolv'
 # * {EventMachine.enable_proxy}
 # * {EventMachine.disable_proxy}
 module EventMachine
+  TimerFired                = 100
+  ConnectionData            = 101
+  ConnectionUnbound         = 102
+  ConnectionAccepted        = 103
+  ConnectionCompleted       = 104
+  LoopbreakSignalled        = 105
+  ConnectionNotifyReadable  = 106
+  ConnectionNotifyWritable  = 107
+  SslHandshakeCompleted     = 108
+
+  TICK_TYPES = {
+    TimerFired               => :TimerFired,
+    ConnectionData           => :ConnectionData,
+    ConnectionUnbound        => :ConnectionUnbound,
+    ConnectionAccepted       => :ConnectionAccepted,
+    ConnectionCompleted      => :ConnectionCompleted,
+    LoopbreakSignalled       => :LoopbreakSignalled,
+    ConnectionNotifyReadable => :ConnectionNotifyReadable,
+    ConnectionNotifyWritable => :ConnectionNotifyWritable,
+    SslHandshakeCompleted    => :SslHandshakeCompleted
+  }
+
   class << self
     # Exposed to allow joining on the thread, when run in a multithreaded
     # environment. Performing other actions on the thread has undefined

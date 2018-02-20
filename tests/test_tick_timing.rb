@@ -1,18 +1,6 @@
 require 'em_test_helper'
 
 class TestTickTiming < Test::Unit::TestCase
-  TICK_TYPES = {
-    EM::TimerFired => :TimerFired,
-    EM::ConnectionData => :ConnectionData,
-    EM::ConnectionUnbound => :ConnectionUnbound,
-    EM::ConnectionAccepted => :ConnectionAccepted,
-    EM::ConnectionCompleted => :ConnectionCompleted,
-    EM::LoopbreakSignalled => :LoopbreakSignalled,
-    EM::ConnectionNotifyReadable => :ConnectionNotifyReadable,
-    EM::ConnectionNotifyWritable => :ConnectionNotifyWritable,
-    EM::SslHandshakeCompleted => :SslHandshakeCompleted
-  }
-
   MICROSECONDS_PER_SECOND = 1_000_000.0
 
   NEXT_TICK_SLEEP = -> do
@@ -55,13 +43,13 @@ class TestTickTiming < Test::Unit::TestCase
         latency_seconds = (end_tick_count - start_tick_count)/MICROSECONDS_PER_SECOND
         sample_seconds_ago = (now_tick_count - start_tick_count)/MICROSECONDS_PER_SECOND
         sample_time = now - sample_seconds_ago
-        puts "%-20s  %0.5f  %0.5f  %s" % [TICK_TYPES[tick_type] || tick_type, -sample_seconds_ago, latency_seconds, callback_proc.inspect]
+        puts "%-20s  %0.5f  %0.5f  %s" % [EventMachine::TICK_TYPES[tick_type] || tick_type, -sample_seconds_ago, latency_seconds, callback_proc.inspect]
       end
       puts "**********"
     end
 
     assert_equal [:TimerFired, :TimerFired, :LoopbreakSignalled, :TimerFired],
-                 timing_samples.map { |tick_type, _, _, _| TICK_TYPES[tick_type] || tick_type }
+                 timing_samples.map { |tick_type, _, _, _| EventMachine::TICK_TYPES[tick_type] || tick_type }
 
     assert_equal [TIMER_SLEEP_SHORT, :run_deferred_callbacks, TIMER_SLEEP_LONG],
                  timing_samples[1..-1].map { |_, callback_proc, _, _| callback_proc }
@@ -90,7 +78,7 @@ class TestTickTiming < Test::Unit::TestCase
     end
 
     assert_equal [:TimerFired, :TimerFired],
-                 timing_samples.map { |tick_type, _, _, _| TICK_TYPES[tick_type] || tick_type }
+                 timing_samples.map { |tick_type, _, _, _| EventMachine::TICK_TYPES[tick_type] || tick_type }
   end
 
   def test_tick_timing_probability_never
