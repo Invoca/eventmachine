@@ -53,9 +53,6 @@ static VALUE Intern_at_signature;
 static VALUE Intern_at_timers;
 static VALUE Intern_at_conns;
 static VALUE Intern_at_error_handler;
-static VALUE Intern_at_tick_timing_max_samples;
-static VALUE Intern_at_tick_timing_sample_probability;
-static VALUE Intern_at_tick_timing;
 static VALUE Intern_event_callback;
 static VALUE Intern_run_deferred_callbacks;
 static VALUE Intern_delete;
@@ -68,6 +65,10 @@ static VALUE Intern_notify_writable;
 static VALUE Intern_proxy_target_unbound;
 static VALUE Intern_proxy_completed;
 static VALUE Intern_connection_completed;
+
+static VALUE EM_at_tick_timing;
+static long EM_tick_timing_max_samples;
+static double EM_tick_timing_sample_probability;
 
 static VALUE rb_cProcStatus;
 
@@ -195,29 +196,31 @@ static void event_error_handler(VALUE self UNUSED, VALUE err)
 	rb_funcall (error_handler, Intern_call, 1, err);
 }
 
+static void set_tick_timing(VALUE self UNUSED, VALUE at_tick_timing, VALUE tick_timing_sample_probability, VALUE tick_timing_max_samples)
+{
+	EM_at_tick_timing = at_tick_timing;
+	EM_tick_timing_sample_probability = NUM2DBL(tick_timing_sample_probability);
+	EM_tick_timing_max_samples = NUM2INT(tick_timing_max_samples);
+}
+
 /*******************
 event_tick_timing
 *******************/
 
 static void event_tick_timing (int tick_type, VALUE callback_sym, VALUE before_tick_count, VALUE after_tick_count)
 {
-	if (rb_ivar_defined(EmModule, Intern_at_tick_timing)) {
-		VALUE tick_timing_array = rb_ivar_get (EmModule, Intern_at_tick_timing);
-
-		long max_samples = NUM2INT(rb_ivar_get (EmModule, Intern_at_tick_timing_max_samples));
-
-		if (RARRAY_LEN(tick_timing_array) >= max_samples)
+	if (EM_at_tick_timing != Qnil) {
+		if (RARRAY_LEN(EM_at_tick_timing) >= EM_tick_timing_max_samples)
 			return;
 
-		double probability = NUM2DBL(rb_ivar_get (EmModule, Intern_at_tick_timing_sample_probability));
 		double r = rand()/(RAND_MAX + 1.0);
-		if (r >= probability) {
+		if (r >= EM_tick_timing_sample_probability) {
 			return;
 		}
 
 		VALUE timing_tuple[] = { INT2FIX(tick_type), callback_sym, before_tick_count, after_tick_count };
 		VALUE timing_tuple_array = rb_ary_new_from_values (sizeof(timing_tuple)/sizeof(timing_tuple[0]), timing_tuple);
-		rb_ary_push (tick_timing_array, timing_tuple_array);
+		rb_ary_push (EM_at_tick_timing, timing_tuple_array);
     }
 }
 
@@ -1293,9 +1296,6 @@ extern "C" void Init_rubyeventmachine()
 	Intern_at_timers = rb_intern ("@timers");
 	Intern_at_conns = rb_intern ("@conns");
 	Intern_at_error_handler = rb_intern("@error_handler");
-	Intern_at_tick_timing_max_samples = rb_intern("@tick_timing_max_samples");
-	Intern_at_tick_timing_sample_probability = rb_intern("@tick_timing_sample_probability");
-	Intern_at_tick_timing = rb_intern("@tick_timing");
 
 	Intern_event_callback = rb_intern ("event_callback");
 	Intern_run_deferred_callbacks = rb_intern ("run_deferred_callbacks");
@@ -1309,6 +1309,10 @@ extern "C" void Init_rubyeventmachine()
 	Intern_proxy_target_unbound = rb_intern ("proxy_target_unbound");
 	Intern_proxy_completed = rb_intern ("proxy_completed");
 	Intern_connection_completed = rb_intern ("connection_completed");
+
+	EM_at_tick_timing = Qnil;
+	EM_tick_timing_sample_probability = 0.0;
+	EM_tick_timing_max_samples = 0;
 
 	// INCOMPLETE, we need to define class Connections inside module EventMachine
 	// run_machine and run_machine_without_threads are now identical.
@@ -1408,6 +1412,8 @@ extern "C" void Init_rubyeventmachine()
 	rb_define_module_function (EmModule, "kqueue?", (VALUE(*)(...))t__kqueue_p, 0);
 
 	rb_define_module_function (EmModule, "ssl?", (VALUE(*)(...))t__ssl_p, 0);
+
+	rb_define_module_function (EmModule, "set_tick_timing", (VALUE(*)(...))set_tick_timing, 3);
 
 	rb_define_method (EmConnection, "get_outbound_data_size", (VALUE(*)(...))conn_get_outbound_data_size, 0);
 	rb_define_method (EmConnection, "associate_callback_target", (VALUE(*)(...))conn_associate_callback_target, 1);

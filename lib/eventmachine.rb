@@ -1382,19 +1382,19 @@ module EventMachine
   # @param [max_samples]          the maximum samples to be stored; others will be silently discarded
   # @param [sample_probability]   random sampling probability factor between 0.0 and 1.0 (0.0 = never; 1.0 = always; 0.10 = 10% on average)
   def self.enable_tick_timing(max_samples: 1_000, sample_probability: 1.0)
-    @tick_timing_max_samples = Integer(max_samples)
+    @tick_timing_max_samples        = Integer(max_samples)
     @tick_timing_sample_probability = sample_probability.to_f
-    if sample_probability > 0.0
-      @tick_timing = []
-    else
-      remove_instance_variable :@tick_timing
-    end
+    @tick_timing                    = if @tick_timing_sample_probability > 0.0
+                                        []
+                                      end
+    set_tick_timing(@tick_timing, @tick_timing_sample_probability, @tick_timing_max_samples)
   end
 
   # Returns the current tick timing samples and resets samples to [].
   #
   # @result
-  #   Returns an array of samples.
+  #   Returns the current array of samples and restarts internally with an empty array.
+  #
   #   Each sample is an array with the following entries
   #     tick_type (integer enum such as EM::TimerFired, EM::ConnectionData, EM::ConnectionUnbound..EM::SslHandshakeCompleted)
   #     callback that was called (symbol or proc)
@@ -1402,7 +1402,10 @@ module EventMachine
   #     end_tick_count   in microseconds ( " " " " " ")
   def self.get_tick_timing_samples
     original_tick_timing = @tick_timing
-    @tick_timing = [] if instance_variable_defined?(:@tick_timing)
+    @tick_timing         = if @tick_timing_sample_probability > 0.0
+                             []
+                           end
+    set_tick_timing(@tick_timing, @tick_timing_sample_probability, @tick_timing_max_samples)
     original_tick_timing || []
   end
 
