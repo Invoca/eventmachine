@@ -510,9 +510,10 @@ void EventMachine_t::_DispatchHeartbeats()
 	// is changed out from underneath MyCurrentLoopTime.
 	const EventableDescriptor *head = NULL;
 
-	for (Heartbeats_t::iterator i = Heartbeats.begin();
-		 i != Heartbeats.end() && i->first <= MyCurrentLoopTime;
-		 ) {
+	Heartbeats_t::iterator i;
+
+	while ((i = Heartbeats.begin()) != Heartbeats.end() &&
+			i->first <= MyCurrentLoopTime) {
 		EventableDescriptor *ed = i->second;
 		if (ed == head)
 			break;
