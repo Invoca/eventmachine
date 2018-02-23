@@ -1394,8 +1394,10 @@ module EventMachine
 
   # Enable tick timing samples to be stored.
   #
-  # @param [max_samples]          the maximum samples to be stored; others will be silently discarded
+  # @param [max_samples]          the maximum samples to be stored; additional samples will be silently discarded
   # @param [sample_probability]   random sampling probability factor between 0.0 and 1.0 (0.0 = never; 1.0 = always; 0.10 = 10% on average)
+  #
+  # If you need to disable after enabling, call this method with sample_probability: 0.0.
   def self.enable_tick_timing(max_samples: 1_000, sample_probability: 1.0)
     @tick_timing_max_samples        = Integer(max_samples)
     @tick_timing_sample_probability = sample_probability.to_f
@@ -1407,14 +1409,17 @@ module EventMachine
 
   # Returns the current tick timing samples and resets samples to [].
   #
-  # @result
+  # @return
   #   Returns the current array of samples and restarts internally with an empty array.
   #
-  #   Each sample is an array with the following entries
-  #     tick_type (integer enum such as EM::TimerFired, EM::ConnectionData, EM::ConnectionUnbound..EM::SslHandshakeCompleted)
-  #     callback that was called (symbol or proc)
-  #     start_tick_count in microseconds (as returned from EventMachine.get_real_time)
-  #     end_tick_count   in microseconds ( " " " " " ")
+  # @example
+  #
+  #   Each sample is an array with the following ordered entries:
+  #
+  #    tick_type         integer enum such as EM::TimerFired, EM::ConnectionData, EM::ConnectionUnbound..EM::SslHandshakeCompleted
+  #    callback          that was called (symbol or proc)
+  #    start_tick_count  in microseconds (as returned from EventMachine.get_real_time)
+  #    end_tick_count    in microseconds
   def self.get_tick_timing_samples
     original_tick_timing = @tick_timing
     @tick_timing         = if @tick_timing_sample_probability > 0.0
@@ -1423,6 +1428,17 @@ module EventMachine
     set_tick_timing(@tick_timing, @tick_timing_sample_probability, @tick_timing_max_samples)
     original_tick_timing || []
   end
+
+  # Returns the current real-time counter, in microseconds, as used internally by EventMachine.
+  #
+  # Useful for subtracting the `start_tick_count` or `end_tick_count` values from `get_tick_timing_samples`.
+  #
+  # @example
+  #
+  #   start_seconds_ago = (EM.get_real_time - start_tick_count) / 1_000_000.0
+  #   start_time = Time.now - start_seconds_ago
+  def self.get_real_time
+  end if false
 
   # This method allows for direct writing of incoming data back out to another descriptor, at the C++ level in the reactor.
   # This is very efficient and especially useful for proxies where high performance is required. Propogating data from a server response
