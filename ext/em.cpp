@@ -1117,11 +1117,9 @@ void EventMachine_t::_RunTimers()
 	// Just keep inspecting and processing the list head until we hit
 	// one that hasn't expired yet.
 
-	while (true) {
-		Timers_t::iterator i = Timers.begin();
-		if (i == Timers.end() || i->first > MyCurrentLoopTime) {
-			break;
-		}
+	Timers_t::iterator i;
+	while ((i = Timers.begin()) != Timers.end() &&
+			i->first <= MyCurrentLoopTime) {
 		if (EventCallback)
 			(*EventCallback) (0, EM_TIMER_FIRED, NULL, i->second.GetBinding());
 		Timers.erase (i);
