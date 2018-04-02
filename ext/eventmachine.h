@@ -123,6 +123,9 @@ extern "C" {
 	void evma_set_kqueue (int use);
 
 	uint64_t evma_get_current_loop_time();
+
+	void evma_event_log_info(const char* format, ...);
+
 #if __cplusplus
 }
 #endif

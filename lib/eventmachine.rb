@@ -99,6 +99,8 @@ module EventMachine
     #
     # @return [Thread]
     attr_reader :reactor_thread
+
+    attr_accessor :logger
   end
   @next_tick_mutex = Mutex.new
   @reactor_running = false
@@ -707,6 +709,7 @@ module EventMachine
         end
 
     c = klass.new s, *args
+    logger and logger.info("bind_connect adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -793,6 +796,7 @@ module EventMachine
     c.instance_variable_set(:@watch_mode, watch_mode)
     c.instance_variable_set(:@fd, fd)
 
+    logger and logger.info("attach_io adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -822,6 +826,7 @@ module EventMachine
           connect_unix_server server
         end
     handler.signature = s
+    logger and logger.info("reconnect adding handler klass #{handler.class.name} with signature #{s}")
     @conns[s] = handler
     block_given? and yield handler
     handler
@@ -902,6 +907,7 @@ module EventMachine
     klass = klass_from_handler(Connection, handler, *args)
     s = open_udp_socket address, port.to_i
     c = klass.new s, *args
+    logger and logger.info("open_datagram_socket adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -1218,6 +1224,7 @@ module EventMachine
     w.unshift( w.first ) if w.first
     s = invoke_popen( w )
     c = klass.new s, *args
+    logger and logger.info("popen adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     yield(c) if block_given?
     c
@@ -1246,6 +1253,7 @@ module EventMachine
 
     s = read_keyboard
     c = klass.new s, *args
+    logger and logger.info("open_keyboard adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -1322,6 +1330,7 @@ module EventMachine
     c = klass.new s, *args
     # we have to set the path like this because of how Connection.new works
     c.instance_variable_set("@path", filename)
+    logger and logger.info("watch_file adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -1355,6 +1364,7 @@ module EventMachine
     c = klass.new s, *args
     # we have to set the path like this because of how Connection.new works
     c.instance_variable_set("@pid", pid)
+    logger and logger.info("watch_process adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c
@@ -1566,6 +1576,7 @@ module EventMachine
       accep,args,blk = @acceptors[conn_binding]
       raise NoHandlerForAcceptedConnection unless accep
       c = accep.new data, *args
+      logger and logger.info("event_callback adding ConnectionAccepted connection klass #{c.class.name} with signature #{data}")
       @conns[data] = c
       blk and blk.call(c)
       c # (needed?)
@@ -1573,6 +1584,7 @@ module EventMachine
       # The remaining code is a fallback for the pure ruby and java reactors.
       # In the C++ reactor, these events are handled in the C event_callback() in rubymain.cpp
     elsif opcode == ConnectionCompleted
+      logger and logger.info("event_callback adding ConnectionCompleted connection klass #{c.class.name} with signature #{conn_binding}")
       c = @conns[conn_binding] or raise ConnectionNotBound, "received ConnectionCompleted for unknown signature: #{conn_binding}"
       c.connection_completed
     elsif opcode == TimerFired
@@ -1581,14 +1593,17 @@ module EventMachine
       t or raise UnknownTimerFired, "timer data: #{data}"
       t.call
     elsif opcode == ConnectionData
+      logger and logger.info("event_callback adding ConnectionData connection klass #{c.class.name} with signature #{conn_binding}")
       c = @conns[conn_binding] or raise ConnectionNotBound, "received data #{data} for unknown signature: #{conn_binding}"
       c.receive_data data
     elsif opcode == LoopbreakSignalled
       run_deferred_callbacks
     elsif opcode == ConnectionNotifyReadable
+      logger and logger.info("event_callback adding ConnectionNotifyReadable connection klass #{c.class.name} with signature #{conn_binding}")
       c = @conns[conn_binding] or raise ConnectionNotBound
       c.notify_readable
     elsif opcode == ConnectionNotifyWritable
+      logger and logger.info("event_callback adding ConnectionNotifyWritable connection klass #{c.class.name} with signature #{conn_binding}")
       c = @conns[conn_binding] or raise ConnectionNotBound
       c.notify_writable
     end
@@ -1602,6 +1617,7 @@ module EventMachine
 
     s = _write_file filename
     c = klass.new s
+    logger and logger.info("_open_file_for_writing adding connection klass #{klass} with signature #{s}")
     @conns[s] = c
     block_given? and yield c
     c

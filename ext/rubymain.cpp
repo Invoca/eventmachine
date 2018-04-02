@@ -53,6 +53,8 @@ static VALUE Intern_at_signature;
 static VALUE Intern_at_timers;
 static VALUE Intern_at_conns;
 static VALUE Intern_at_error_handler;
+static VALUE Intern_at_logger;
+static VALUE Intern_info;
 static VALUE Intern_event_callback;
 static VALUE Intern_run_deferred_callbacks;
 static VALUE Intern_delete;
@@ -98,6 +100,8 @@ static inline VALUE event_callback (struct em_event* e)
 	int event = e->event;
 	const char *data_str = e->data_str;
 	const unsigned long data_num = e->data_num;
+
+	evma_event_log_info("event_callback event %d; signature %lu", event, (long unsigned)signature);
 
 	switch (event) {
 		case EM_CONNECTION_READ:
@@ -201,6 +205,29 @@ static void set_tick_timing(VALUE self UNUSED, VALUE at_tick_timing, VALUE tick_
 	EM_at_tick_timing = at_tick_timing;
 	EM_tick_timing_sample_probability = NUM2DBL(tick_timing_sample_probability);
 	EM_tick_timing_max_samples = NUM2INT(tick_timing_max_samples);
+}
+
+/*******************
+event_log_info
+*******************/
+
+extern "C" void evma_event_log_info(const char* format, ...)
+{
+	if (rb_ivar_defined(EmModule, Intern_at_logger)) {
+		VALUE logger = rb_ivar_get(EmModule, Intern_at_logger);
+		if (logger != Qnil) {
+			static const char logging_prefix[] = "EM: ";
+			static size_t logging_prefix_size = sizeof(logging_prefix) - 1;
+			char buffer[512];
+			strcpy(buffer, logging_prefix);
+			va_list args;
+			va_start (args, format);
+			vsnprintf (buffer + logging_prefix_size, sizeof(buffer) - logging_prefix_size, format, args);
+			va_end (args);
+
+			rb_funcall (logger, Intern_info, 1, rb_str_new2(buffer));
+		}
+	}
 }
 
 /*******************
@@ -1296,6 +1323,8 @@ extern "C" void Init_rubyeventmachine()
 	Intern_at_timers = rb_intern ("@timers");
 	Intern_at_conns = rb_intern ("@conns");
 	Intern_at_error_handler = rb_intern("@error_handler");
+	Intern_at_logger = rb_intern("@logger");
+	Intern_info = rb_intern("info");
 
 	Intern_event_callback = rb_intern ("event_callback");
 	Intern_run_deferred_callbacks = rb_intern ("run_deferred_callbacks");
