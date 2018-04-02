@@ -945,8 +945,10 @@ void ConnectionDescriptor::Write()
 		int o = getsockopt (GetSocket(), SOL_SOCKET, SO_ERROR, (char*)&error, &len);
 		#endif
 		if ((o == 0) && (error == 0)) {
-			if (EventCallback)
+			if (EventCallback) {
+				evma_event_log_info("ConnectionDescriptor::Write bConnectPending = true; signature %lu", (long unsigned)GetBinding());
 				(*EventCallback)(GetBinding(), EM_CONNECTION_COMPLETED, "", 0);
+			}
 
 			// 5May09: Moved epoll/kqueue read/write arming into SetConnectPending, so it can be called
 			// from EventMachine_t::AttachFD as well.

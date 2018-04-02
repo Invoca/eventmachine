@@ -1250,6 +1250,9 @@ const uintptr_t EventMachine_t::ConnectToServer (const char *bind_addr, int bind
 		ConnectionDescriptor *cd = new ConnectionDescriptor (sd, this);
 		if (!cd)
 			throw std::runtime_error ("no connection allocated");
+
+		evma_event_log_info("EventMachine_t::ConnectToServer SetConnectPending (true) 1; signature %lu", (long unsigned)cd->GetBinding());
+
 		cd->SetConnectPending (true);
 		Add (cd);
 		out = cd->GetBinding();
@@ -1268,6 +1271,9 @@ const uintptr_t EventMachine_t::ConnectToServer (const char *bind_addr, int bind
 			ConnectionDescriptor *cd = new ConnectionDescriptor (sd, this);
 			if (!cd)
 				throw std::runtime_error ("no connection allocated");
+
+			evma_event_log_info("EventMachine_t::ConnectToServer SetConnectPending (true) 2; signature %lu", (long unsigned)cd->GetBinding());
+
 			cd->SetConnectPending (true);
 			Add (cd);
 			out = cd->GetBinding();
@@ -1322,6 +1328,9 @@ const uintptr_t EventMachine_t::ConnectToServer (const char *bind_addr, int bind
 		ConnectionDescriptor *cd = new ConnectionDescriptor (sd, this);
 		if (!cd)
 			throw std::runtime_error ("no connection allocated");
+
+		evma_event_log_info("EventMachine_t::ConnectToServer SetConnectPending (true) 3; signature %lu", (long unsigned)cd->GetBinding());
+
 		cd->SetConnectPending (true);
 		Add (cd);
 		out = cd->GetBinding();
@@ -1399,6 +1408,9 @@ const uintptr_t EventMachine_t::ConnectToUnixServer (const char *server)
 	ConnectionDescriptor *cd = new ConnectionDescriptor (fd, this);
 	if (!cd)
 		throw std::runtime_error ("no connection allocated");
+
+	evma_event_log_info("EventMachine_t::ConnectToUnixServer SetConnectPending (true); signature %lu", (long unsigned)cd->GetBinding());
+
 	cd->SetConnectPending (true);
 	Add (cd);
 	out = cd->GetBinding();
