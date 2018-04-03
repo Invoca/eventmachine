@@ -654,12 +654,18 @@ void EventMachine_t::_RunEpollOnce()
 
 			assert(ed->GetSocket() != INVALID_SOCKET);
 
-			if (epoll_events[i].events & EPOLLIN)
+			if (epoll_events[i].events & EPOLLIN) {
+				evma_event_log_info("EventMachine_t::_RunEpollOnce[%d] Read; signature %lu", i, (long unsigned)ed->GetBinding());
 				ed->Read();
-			if (epoll_events[i].events & EPOLLOUT)
+			}
+			if (epoll_events[i].events & EPOLLOUT) {
+				evma_event_log_info("EventMachine_t::_RunEpollOnce[%d] Write; signature %lu", i, (long unsigned)ed->GetBinding());
 				ed->Write();
-			if (epoll_events[i].events & (EPOLLERR | EPOLLHUP))
+			}
+			if (epoll_events[i].events & (EPOLLERR | EPOLLHUP)) {
+				evma_event_log_info("EventMachine_t::_RunEpollOnce[%d] Error; signature %lu", i, (long unsigned)ed->GetBinding());
 				ed->HandleError();
+			}
 		}
 	}
 	else if (s < 0) {
