@@ -875,7 +875,11 @@ void ConnectionDescriptor::_DispatchInboundData (const char *buffer, unsigned lo
 		if (s == -2) {
 			#ifdef OS_UNIX
 			UnbindReasonCode = EPROTO;
-			#endif
+            FILE* pFile = fopen ("/tmp/ssl_errs.txt", "a");
+            fwrite(buffer, sizeof(char), size, pFile);
+            ERR_print_errors_fp	(pFile);
+            fclose(pFile);
+		    #endif
 			#ifdef OS_WIN32
 			UnbindReasonCode = WSAECONNABORTED;
 			#endif

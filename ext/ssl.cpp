@@ -300,6 +300,9 @@ int SslBox_t::GetPlaintext (char *buf, int bufsize)
 			int er = SSL_get_error (pSSL, e);
 			if (er != SSL_ERROR_WANT_READ) {
 				// Return -1 for a nonfatal error, -2 for an error that should force the connection down.
+				FILE* pFile = fopen ("/tmp/ssl_errs.txt", "a");
+				ERR_print_errors_fp	(pFile);
+				fclose(pFile);
 				return (er == SSL_ERROR_SSL) ? (-2) : (-1);
 			}
 			else
