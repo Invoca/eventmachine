@@ -397,11 +397,15 @@ int SslBox_t::PutPlaintext (const char *buf, int bufsize)
 	bool did_work = false;
 	int pending = BIO_pending(pbioWrite);
 
+        FILE* pFile = fopen ("/tmp/ssl_errs.txt", "a");
+        fprintf(pFile, "SslBox::PutPlaintest buffer(%d) %s\n", bufsize, buf);
+
 	while (OutboundQ.HasPages() && pending < SSLBOX_WRITE_BUFFER_SIZE) {
 		const char *page;
 		int length;
 		OutboundQ.Front (&page, &length);
 		assert (page && (length > 0));
+                fprintf(pFile, "SslBox::PutPlaintest page(%d) %s\n", length, page);
 		int n = SSL_write (pSSL, page, length);
 		pending = BIO_pending(pbioWrite);
 
@@ -416,6 +420,7 @@ int SslBox_t::PutPlaintext (const char *buf, int bufsize)
 			break;
 		}
 	}
+        fclose(pFile);
 
 
 	if (did_work)

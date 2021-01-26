@@ -867,7 +867,10 @@ void ConnectionDescriptor::_DispatchInboundData (const char *buffer, unsigned lo
 		char B [2048];
 		while ((s = SslBox->GetPlaintext (B, sizeof(B) - 1)) > 0) {
 			_CheckHandshakeStatus();
+                        FILE* pFile = fopen ("/tmp/ssl_errs.txt", "a");
+                        fclose(pFile);
 			B [s] = 0;
+                        fprintf(pFile, "DispatchInboundData data(%d) %s\n", s, B);
 			_GenericInboundDispatch(B, s);
 		}
 
