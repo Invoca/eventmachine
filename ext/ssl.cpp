@@ -120,7 +120,8 @@ static void InitializeDefaultCredentials()
 SslContext_t::SslContext_t
 **************************/
 
-SslContext_t::SslContext_t (bool is_server, const string &privkeyfile, const string &certchainfile):
+SslContext_t::SslContext_t (bool is_server, const std::string &privkeyfile, const std::string &certchainfile, const std::string &cipherlist, const std::string &ecdh_curve, const std::string &dhparam, int ssl_version) :
+	bIsServer (is_server),
 	pCtx (NULL),
 	PrivateKey (NULL),
 	Certificate (NULL)
@@ -144,18 +145,47 @@ SslContext_t::SslContext_t (bool is_server, const string &privkeyfile, const str
 		InitializeDefaultCredentials();
 	}
 
-	bIsServer = is_server;
-	pCtx = SSL_CTX_new (is_server ? SSLv23_server_method() : SSLv23_client_method());
+	pCtx = SSL_CTX_new (bIsServer ? SSLv23_server_method() : SSLv23_client_method());
 	if (!pCtx)
 		throw std::runtime_error ("no SSL context");
 
 	SSL_CTX_set_options (pCtx, SSL_OP_ALL);
-	//SSL_CTX_set_options (pCtx, (SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3));
-#ifdef SSL_MODE_RELEASE_BUFFERS
-	SSL_CTX_set_mode (pCtx, SSL_MODE_RELEASE_BUFFERS);
-#endif
 
-	if (is_server) {
+	#ifdef SSL_CTRL_CLEAR_OPTIONS
+	SSL_CTX_clear_options (pCtx, SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3|SSL_OP_NO_TLSv1);
+	# ifdef SSL_OP_NO_TLSv1_1
+	SSL_CTX_clear_options (pCtx, SSL_OP_NO_TLSv1_1);
+	# endif
+	# ifdef SSL_OP_NO_TLSv1_2
+	SSL_CTX_clear_options (pCtx, SSL_OP_NO_TLSv1_2);
+	# endif
+	#endif
+
+	if (!(ssl_version & EM_PROTO_SSLv2))
+		SSL_CTX_set_options (pCtx, SSL_OP_NO_SSLv2);
+
+	if (!(ssl_version & EM_PROTO_SSLv3))
+		SSL_CTX_set_options (pCtx, SSL_OP_NO_SSLv3);
+
+	if (!(ssl_version & EM_PROTO_TLSv1))
+		SSL_CTX_set_options (pCtx, SSL_OP_NO_TLSv1);
+
+	#ifdef SSL_OP_NO_TLSv1_1
+	if (!(ssl_version & EM_PROTO_TLSv1_1))
+		SSL_CTX_set_options (pCtx, SSL_OP_NO_TLSv1_1);
+	#endif
+
+	#ifdef SSL_OP_NO_TLSv1_2
+	if (!(ssl_version & EM_PROTO_TLSv1_2))
+		SSL_CTX_set_options (pCtx, SSL_OP_NO_TLSv1_2);
+	#endif
+
+	#ifdef SSL_MODE_RELEASE_BUFFERS
+	SSL_CTX_set_mode (pCtx, SSL_MODE_RELEASE_BUFFERS);
+	#endif
+
+	if (bIsServer) {
+
 		// The SSL_CTX calls here do NOT allocate memory.
 		int e;
 		if (privkeyfile.length() > 0)
@@ -171,11 +201,69 @@ SslContext_t::SslContext_t (bool is_server, const string &privkeyfile, const str
 			e = SSL_CTX_use_certificate (pCtx, DefaultCertificate);
 		if (e <= 0) ERR_print_errors_fp(stderr);
 		assert (e > 0);
+
+		if (dhparam.length() > 0) {
+			DH   *dh;
+			BIO  *bio;
+
+			bio = BIO_new_file(dhparam.c_str(), "r");
+			if (bio == NULL) {
+				char buf [500];
+				snprintf (buf, sizeof(buf)-1, "dhparam: BIO_new_file(%s) failed", dhparam.c_str());
+				throw std::runtime_error (buf);
+			}
+
+			dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
+
+			if (dh == NULL) {
+				BIO_free(bio);
+				char buf [500];
+				snprintf (buf, sizeof(buf)-1, "dhparam: PEM_read_bio_DHparams(%s) failed", dhparam.c_str());
+				throw std::runtime_error (buf);
+			}
+
+			SSL_CTX_set_tmp_dh(pCtx, dh);
+
+			DH_free(dh);
+			BIO_free(bio);
+		}
+
+		if (ecdh_curve.length() > 0) {
+			#if OPENSSL_VERSION_NUMBER >= 0x0090800fL && !defined(OPENSSL_NO_ECDH)
+				int      nid;
+				EC_KEY  *ecdh;
+
+				nid = OBJ_sn2nid((const char *) ecdh_curve.c_str());
+				if (nid == 0) {
+					char buf [200];
+					snprintf (buf, sizeof(buf)-1, "ecdh_curve: Unknown curve name: %s", ecdh_curve.c_str());
+					throw std::runtime_error (buf);
+				}
+
+				ecdh = EC_KEY_new_by_curve_name(nid);
+				if (ecdh == NULL) {
+					char buf [200];
+					snprintf (buf, sizeof(buf)-1, "ecdh_curve: Unable to create: %s", ecdh_curve.c_str());
+					throw std::runtime_error (buf);
+				}
+
+				SSL_CTX_set_options(pCtx, SSL_OP_SINGLE_ECDH_USE);
+
+				SSL_CTX_set_tmp_ecdh(pCtx, ecdh);
+
+				EC_KEY_free(ecdh);
+			#else
+				throw std::runtime_error ("No openssl ECDH support");
+			#endif
+		}
 	}
 
-	SSL_CTX_set_cipher_list (pCtx, "ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH");
+	if (cipherlist.length() > 0)
+		SSL_CTX_set_cipher_list (pCtx, cipherlist.c_str());
+	else
+		SSL_CTX_set_cipher_list (pCtx, "ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH");
 
-	if (is_server) {
+	if (bIsServer) {
 		SSL_CTX_sess_set_cache_size (pCtx, 128);
 		SSL_CTX_set_session_id_context (pCtx, (unsigned char*)"eventmachine", 12);
 	}
@@ -216,10 +304,11 @@ SslContext_t::~SslContext_t()
 SslBox_t::SslBox_t
 ******************/
 
-SslBox_t::SslBox_t (bool is_server, const string &privkeyfile, const string &certchainfile, bool verify_peer, const uintptr_t binding):
+SslBox_t::SslBox_t (bool is_server, const std::string &privkeyfile, const std::string &certchainfile, bool verify_peer, bool fail_if_no_peer_cert, const std::string &snihostname, const std::string &cipherlist, const std::string &ecdh_curve, const std::string &dhparam, int ssl_version, const uintptr_t binding):
 	bIsServer (is_server),
 	bHandshakeCompleted (false),
 	bVerifyPeer (verify_peer),
+	bFailIfNoPeerCert (fail_if_no_peer_cert),
 	pSSL (NULL),
 	pbioRead (NULL),
 	pbioWrite (NULL)
@@ -228,7 +317,7 @@ SslBox_t::SslBox_t (bool is_server, const string &privkeyfile, const string &cer
 	 * a new one every time we come here.
 	 */
 
-	Context = new SslContext_t (bIsServer, privkeyfile, certchainfile);
+	Context = new SslContext_t (bIsServer, privkeyfile, certchainfile, cipherlist, ecdh_curve, dhparam, ssl_version);
 	assert (Context);
 
 	pbioRead = BIO_new (BIO_s_mem());
@@ -239,16 +328,28 @@ SslBox_t::SslBox_t (bool is_server, const string &privkeyfile, const string &cer
 
 	pSSL = SSL_new (Context->pCtx);
 	assert (pSSL);
+
+	if (snihostname.length() > 0) {
+		SSL_set_tlsext_host_name (pSSL, snihostname.c_str());
+	}
+
 	SSL_set_bio (pSSL, pbioRead, pbioWrite);
 
 	// Store a pointer to the binding signature in the SSL object so we can retrieve it later
 	SSL_set_ex_data(pSSL, 0, (void*) binding);
 
-	if (bVerifyPeer)
-		SSL_set_verify(pSSL, SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE, ssl_verify_wrapper);
+	if (bVerifyPeer) {
+		int mode = SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
+		if (bFailIfNoPeerCert)
+			mode = mode | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+		SSL_set_verify(pSSL, mode, ssl_verify_wrapper);
+	}
 
-	if (!bIsServer)
-		SSL_connect (pSSL);
+	if (!bIsServer) {
+		int e = SSL_connect (pSSL);
+		if (e != 1)
+			ERR_print_errors_fp(stderr);
+	}
 }
 
 
@@ -299,6 +400,7 @@ int SslBox_t::GetPlaintext (char *buf, int bufsize)
 		if (e != 1) {
 			int er = SSL_get_error (pSSL, e);
 			if (er != SSL_ERROR_WANT_READ) {
+				ERR_print_errors_fp(stderr);
 				// Return -1 for a nonfatal error, -2 for an error that should force the connection down.
 				return (er == SSL_ERROR_SSL) ? (-2) : (-1);
 			}
@@ -437,6 +539,52 @@ X509 *SslBox_t::GetPeerCert()
 	return cert;
 }
 
+/**********************
+SslBox_t::GetCipherBits
+**********************/
+
+int SslBox_t::GetCipherBits()
+{
+	int bits = -1;
+	if (pSSL)
+		SSL_get_cipher_bits(pSSL, &bits);
+	return bits;
+}
+
+/**********************
+SslBox_t::GetCipherName
+**********************/
+
+const char *SslBox_t::GetCipherName()
+{
+	if (pSSL)
+		return SSL_get_cipher_name(pSSL);
+	return NULL;
+}
+
+/**********************
+SslBox_t::GetCipherProtocol
+**********************/
+
+const char *SslBox_t::GetCipherProtocol()
+{
+	if (pSSL)
+		return SSL_get_cipher_version(pSSL);
+	return NULL;
+}
+
+/**********************
+SslBox_t::GetSNIHostname
+**********************/
+
+const char *SslBox_t::GetSNIHostname()
+{
+	#ifdef TLSEXT_NAMETYPE_host_name
+	if (pSSL)
+		return SSL_get_servername (pSSL, TLSEXT_NAMETYPE_host_name);
+	#endif
+	return NULL;
+}
 
 /******************
 ssl_verify_wrapper

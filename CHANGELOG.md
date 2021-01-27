@@ -1,5 +1,79 @@
 # Changelog
 
+## 1.2.7 (May 12, 2018)
+* Fix segfault on large numbers of connections [#843]
+
+## 1.2.6 (April 30, 2018)
+* *Fix segfault when an Exception is raised from unbind callback (for real this time!)*
+* Fix race condition while initializing the machine [#756]
+* Fix for newer compilers where bind() and std::bind() conflict [#830, #831]
+* Be verbose about SSL connection errors [#807]
+* Avoid explicitly calling class methods when in class scope
+* Java: Add EM_PROTO_SSL/TLS definitions [#773, #791]
+* Java: return zero when sending data to a closed connection [#475, #804]
+* Pure Ruby: Connection::error? calls report_connection_error_status [#801]
+
+## 1.2.5 (July 27, 2017)
+* Java: Use long for larger values in oneshot timer intervals [#784, #794]
+
+## 1.2.4 (July 27, 2017)
+* Java: Add EM_PROTO_SSL/TLS definitions [#773, #791]
+* Fix IPv6 UDP get_peername [#788]
+* Allow for larger values in oneshot timer intervals [#784, #793]
+* Update extconf.rb to allow MinGW builds with OpenSSL 1.1.0 [#785]
+
+## 1.2.3 (February 22, 2017)
+* Pure Ruby: Add get_sockname [#308, #772]
+* Fix segfault when an Exception is raised from unbind callback [#765, #766]
+* Allow destructors to throw when compiling in >= C++11 [#767]
+
+## 1.2.2 (January 23, 2017)
+* Java: Fix Fixnum deprecated warning in Ruby 2.4+ [#759]
+* Fix uncaught C++ exception in file watcher and raise InvalidSignature [#512, #757]
+* Fix connection count off-by-one for epoll and kqueue [#750]
+* Fix uninitialized variable warning in EM::P::HttpClient [#749]
+* Fix missing initial value for EventableDescriptor NextHeartbeat [#748]
+* Fix hostname resolution on Solaris, Ilumos, SmartOS, et al [#745, #746]
+* Improve reliability of tests, reduce public Internet accesses in tests [#656, #666, #749]
+
+## 1.2.1 (November 15, 2016)
+* Throw strerror(errno) when getsockname or getpeername fail [#683]
+* Use a single concrete implementation of getpeername/getsockname, the rest pure virtuals [#683]
+* Use gai_strerror to get the failure string from getaddrinfo [#744]
+* Fix deregistering descriptor when using KQUEUE [#728]
+* Fix to enable to work an example code in EM::Pool [#731]
+* LineText2: Add regular expression delimiter support [#706]
+* Pure Ruby: EM rescue ECONNREFUSED on initial TCP connect [#741]
+* Pure Ruby: EM SSL (working start_tls) [#712]
+* Pure Ruby: EM fixes [#707]
+* Java: Use Acceptors to get peer and sock names if not present in Connections [#743]
+
+## 1.2.0.1 (March 15, 2016)
+* Fix crash when accepting IPv6 connections due to struct sockaddr_in [#698, #699]
+
+## 1.2.0 (March 15, 2016)
+* Integrate work from the EventMachine-LE 1.1.x versions [#570]
+* Add start_tls options :ecdh_curve, :dhparam, :fail_if_no_peer_cert [#195, #275, #399, #665]
+* Add start_tls option :ssl_version for choosing SSL/TLS versions and ciphers [#359, #348, #603, #654]
+* Add start_tls option :sni_hostname to be passed to TLS params [#593]
+* Add method EM::Channel#num_subscribers to get the number of subscribers to a channel [#640]
+* Add support for proc-sources in EM::Iterator [#639]
+* Factor out method cleanup_machine to cleanup code from EM.run [#650]
+* Replace Exception class with StandardError [#637]
+* Close socket on close_connection even after close_connection_after_writing [#694]
+* Allow reusing of datagram socket/setting bind device [#662]
+* Handle deferred exceptions in reactor thread [#486]
+* Reimplement Queue to avoid shift/push performance problem [#311]
+* Windows: Switch from gethostbyname to getaddrinfo, support IPv6 addresses [#303, #630]
+* Windows: Use rake-compiler-dock to cross-compile gems [#627]
+* Windows: Add AppVeyor configuration for Windows CI testing [#578]
+* Windows: Bump rake-compiler to version 0.9.x [#542]
+* Fix compilation on AIX (w/ XLC) [#693]
+* Fix build on OpenBSD [#690]
+* Fix OpenSSL compile issue on AIX 7.1 [#678]
+* Fix EventMachine.fork_reactor keeps the threadpool of the original process [#425]
+* Fix to prevent event machine from stopping when a raise is done in an unbind [#327]
+
 ## 1.0.9.1 (January 14, 2016)
 * Fix EPROTO not defined on Windows [#676]
 * Fix missing cast to struct sockaddr * [#671]

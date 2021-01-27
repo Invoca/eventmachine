@@ -33,7 +33,7 @@ class SslContext_t
 class SslContext_t
 {
 	public:
-		SslContext_t (bool is_server, const string &privkeyfile, const string &certchainfile);
+		SslContext_t (bool is_server, const std::string &privkeyfile, const std::string &certchainfile, const std::string &cipherlist, const std::string &ecdh_curve, const std::string &dhparam, int ssl_version);
 		virtual ~SslContext_t();
 
 	private:
@@ -61,7 +61,7 @@ class SslBox_t
 class SslBox_t
 {
 	public:
-		SslBox_t (bool is_server, const string &privkeyfile, const string &certchainfile, bool verify_peer, const uintptr_t binding);
+		SslBox_t (bool is_server, const std::string &privkeyfile, const std::string &certchainfile, bool verify_peer, bool fail_if_no_peer_cert, const std::string &snihostname, const std::string &cipherlist, const std::string &ecdh_curve, const std::string &dhparam, int ssl_version, const uintptr_t binding);
 		virtual ~SslBox_t();
 
 		int PutPlaintext (const char*, int);
@@ -73,6 +73,10 @@ class SslBox_t
 		bool IsHandshakeCompleted() {return bHandshakeCompleted;}
 
 		X509 *GetPeerCert();
+		int GetCipherBits();
+		const char *GetCipherName();
+		const char *GetCipherProtocol();
+		const char *GetSNIHostname();
 
 		void Shutdown();
 
@@ -82,6 +86,7 @@ class SslBox_t
 		bool bIsServer;
 		bool bHandshakeCompleted;
 		bool bVerifyPeer;
+		bool bFailIfNoPeerCert;
 		SSL *pSSL;
 		BIO *pbioRead;
 		BIO *pbioWrite;

@@ -376,9 +376,20 @@ module EventMachine
     #
     # @option args [String] :private_key_file (nil) local path of a readable file that must contain a private key in the [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail).
     #
-    # @option args [String] :verify_peer (false)    indicates whether a server should request a certificate from a peer, to be verified by user code.
+    # @option args [Boolean] :verify_peer (false)   indicates whether a server should request a certificate from a peer, to be verified by user code.
     #                                               If true, the {#ssl_verify_peer} callback on the {EventMachine::Connection} object is called with each certificate
     #                                               in the certificate chain provided by the peer. See documentation on {#ssl_verify_peer} for how to use this.
+    #
+    # @option args [Boolean] :fail_if_no_peer_cert (false)   Used in conjunction with verify_peer. If set the SSL handshake will be terminated if the peer does not provide a certificate.
+    #
+    #
+    # @option args [String] :cipher_list ("ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH") indicates the available SSL cipher values. Default value is "ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH". Check the format of the OpenSSL cipher string at http://www.openssl.org/docs/apps/ciphers.html#CIPHER_LIST_FORMAT.
+    #
+    # @option args [String] :ecdh_curve (nil)  The curve for ECDHE ciphers. See available ciphers with 'openssl ecparam -list_curves'
+    #
+    # @option args [String] :dhparam (nil)  The local path of a file containing DH parameters for EDH ciphers in [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail) See: 'openssl dhparam'
+    #
+    # @option args [Array] :ssl_version (TLSv1 TLSv1_1 TLSv1_2) indicates the allowed SSL/TLS versions. Possible values are: {SSLv2}, {SSLv3}, {TLSv1}, {TLSv1_1}, {TLSv1_2}.
     #
     # @example Using TLS with EventMachine
     #
@@ -404,7 +415,15 @@ module EventMachine
     #
     # @see #ssl_verify_peer
     def start_tls args={}
-      priv_key, cert_chain, verify_peer = args.values_at(:private_key_file, :cert_chain_file, :verify_peer)
+      priv_key     = args[:private_key_file]
+      cert_chain   = args[:cert_chain_file]
+      verify_peer  = args[:verify_peer]
+      sni_hostname = args[:sni_hostname]
+      cipher_list  = args[:cipher_list]
+      ssl_version  = args[:ssl_version]
+      ecdh_curve   = args[:ecdh_curve]
+      dhparam      = args[:dhparam]
+      fail_if_no_peer_cert = args[:fail_if_no_peer_cert]
 
       [priv_key, cert_chain].each do |file|
         next if file.nil? or file.empty?
@@ -412,7 +431,31 @@ module EventMachine
         "Could not find #{file} for start_tls" unless File.exist? file
       end
 
-      EventMachine::set_tls_parms(@signature, priv_key || '', cert_chain || '', verify_peer)
+      protocols_bitmask = 0
+      if ssl_version.nil?
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_1
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_2
+      else
+        [ssl_version].flatten.each do |p|
+          case p.to_s.downcase
+          when 'sslv2'
+            protocols_bitmask |= EventMachine::EM_PROTO_SSLv2
+          when 'sslv3'
+            protocols_bitmask |= EventMachine::EM_PROTO_SSLv3
+          when 'tlsv1'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1
+          when 'tlsv1_1'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_1
+          when 'tlsv1_2'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_2
+          else
+            raise("Unrecognized SSL/TLS Protocol: #{p}")
+          end
+        end
+      end
+
+      EventMachine::set_tls_parms(@signature, priv_key || '', cert_chain || '', verify_peer, fail_if_no_peer_cert, sni_hostname || '', cipher_list || '', ecdh_curve || '', dhparam || '', protocols_bitmask)
       EventMachine::start_tls @signature
     end
 
@@ -488,6 +531,21 @@ module EventMachine
       EventMachine::get_peer_cert @signature
     end
 
+    def get_cipher_bits
+      EventMachine::get_cipher_bits @signature
+    end
+
+    def get_cipher_name
+      EventMachine::get_cipher_name @signature
+    end
+
+    def get_cipher_protocol
+      EventMachine::get_cipher_protocol @signature
+    end
+
+    def get_sni_hostname
+      EventMachine::get_sni_hostname @signature
+    end
 
     # Sends UDP messages.
     #

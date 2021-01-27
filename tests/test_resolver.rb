@@ -1,9 +1,26 @@
 require 'em_test_helper'
 
 class TestResolver < Test::Unit::TestCase
+  def test_nameserver
+    assert_kind_of(String, EM::DNS::Resolver.nameserver)
+  end
+
+  def test_nameservers
+    assert_kind_of(Array, EM::DNS::Resolver.nameservers)
+  end
+
+  def test_hosts
+    assert_kind_of(Hash, EM::DNS::Resolver.hosts)
+
+    # Make sure that blank or comment lines are skipped
+    refute(EM::DNS::Resolver.hosts.include? nil)
+  end
+
   def test_a
+    pend('FIXME: this test is broken on Windows') if windows?
+
     EM.run {
-      d = EM::DNS::Resolver.resolve "google.com"
+      d = EM::DNS::Resolver.resolve "example.com"
       d.errback { assert false }
       d.callback { |r|
         assert r
@@ -28,7 +45,10 @@ class TestResolver < Test::Unit::TestCase
     }
   end
 
+  # There isn't a public DNS entry like 'example.com' with an A rrset
   def test_a_pair
+    pend('FIXME: this test is broken on Windows') if windows?
+
     EM.run {
       d = EM::DNS::Resolver.resolve "yahoo.com"
       d.errback { |err| assert false, "failed to resolve yahoo.com: #{err}" }
@@ -41,6 +61,8 @@ class TestResolver < Test::Unit::TestCase
   end
 
   def test_localhost
+    pend('FIXME: this test is broken on Windows') if windows?
+
     EM.run {
       d = EM::DNS::Resolver.resolve "localhost"
       d.errback { assert false }
@@ -54,9 +76,11 @@ class TestResolver < Test::Unit::TestCase
   end
 
   def test_timer_cleanup
+    pend('FIXME: this test is broken on Windows') if windows?
+
     EM.run {
-      d = EM::DNS::Resolver.resolve "google.com"
-      d.errback { |err| assert false, "failed to resolve google.com: #{err}" }
+      d = EM::DNS::Resolver.resolve "example.com"
+      d.errback { |err| assert false, "failed to resolve example.com: #{err}" }
       d.callback { |r|
         # This isn't a great test, but it's hard to get more canonical
         # confirmation that the timer is cancelled

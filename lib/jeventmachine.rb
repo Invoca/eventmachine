@@ -77,6 +77,19 @@ module EventMachine
   ConnectionNotifyWritable = 107
   # @private
   SslHandshakeCompleted = 108
+  # @private
+  SslVerify = 109
+
+  # @private
+  EM_PROTO_SSLv2 = 2
+  # @private
+  EM_PROTO_SSLv3 = 4
+  # @private
+  EM_PROTO_TLSv1 = 8
+  # @private
+  EM_PROTO_TLSv1_1 = 16
+  # @private
+  EM_PROTO_TLSv1_2 = 32
 
   # Exceptions that are defined in rubymain.cpp
   class ConnectionError < RuntimeError; end
@@ -125,6 +138,8 @@ module EventMachine
   end
   def self.send_data sig, data, length
     @em.sendData sig, data.to_java_bytes
+  rescue java.lang.NullPointerException
+    0
   end
   def self.send_datagram sig, data, length, address, port
     @em.sendDatagram sig, data.to_java_bytes, length, address, port
@@ -224,12 +239,12 @@ module EventMachine
       field.setAccessible(true)
       fileno = field.get(fileno)
     else
-      raise ArgumentError, 'attach_fd requires Java Channel or POSIX fileno' unless fileno.is_a? Fixnum
+      raise ArgumentError, 'attach_fd requires Java Channel or POSIX fileno' unless fileno.is_a? Integer
     end
 
     if fileno == 0
       raise "can't open STDIN as selectable in Java =("
-    elsif fileno.is_a? Fixnum
+    elsif fileno.is_a? Integer
       # 8Aug09: The following code is specific to the sun jvm's SocketChannelImpl. Is there a cross-platform
       # way of implementing this? If so, also remember to update EventableSocketChannel#close and #cleanup
       fd = FileDescriptor.new

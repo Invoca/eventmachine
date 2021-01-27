@@ -37,7 +37,7 @@ See the file COPYING for complete licensing information.
     #include <ruby/io.h>
   #endif
 
-  #if defined(HAVE_RBTRAP)
+  #if defined(HAVE_RB_TRAP_IMMEDIATE)
     #include <rubysig.h>
   #elif defined(HAVE_RB_ENABLE_INTERRUPT)
     extern "C" {
@@ -69,7 +69,7 @@ See the file COPYING for complete licensing information.
   #define EmSelect select
 #endif
 
-#if !defined(HAVE_RB_FDSET_T)
+#if !defined(HAVE_TYPE_RB_FDSET_T)
 #define fd_check(n) (((n) < FD_SETSIZE) ? 1 : 0*fprintf(stderr, "fd %d too large for select\n", (n)))
 // These definitions are cribbed from include/ruby/intern.h in Ruby 1.9.3,
 // with this change: any macros that read or write the nth element of an
@@ -91,6 +91,19 @@ typedef fd_set rb_fdset_t;
   select(fd_check((n)-1) ? (n) : FD_SETSIZE, (rfds), (wfds), (efds), (timeout))
 #define rb_thread_fd_select(n, rfds, wfds, efds, timeout)  \
   rb_thread_select(fd_check((n)-1) ? (n) : FD_SETSIZE, (rfds), (wfds), (efds), (timeout))
+#endif
+
+
+// This Solaris fix is adapted from eval_intern.h in Ruby 1.9.3:
+// Solaris sys/select.h switches select to select_large_fdset to support larger
+// file descriptors if FD_SETSIZE is larger than 1024 on 32bit environment.
+// But Ruby doesn't change FD_SETSIZE because fd_set is allocated dynamically.
+// So following definition is required to use select_large_fdset.
+#ifdef HAVE_SELECT_LARGE_FDSET
+#define select(n, r, w, e, t) select_large_fdset((n), (r), (w), (e), (t))
+extern "C" {
+  int select_large_fdset(int, fd_set *, fd_set *, fd_set *, struct timeval *);
+}
 #endif
 
 
@@ -140,15 +153,16 @@ class EventMachine_t
 		bool RunOnce();
 		void Run();
 		void ScheduleHalt();
+		bool Stopping();
 		void SignalLoopBreaker();
-		const uintptr_t InstallOneshotTimer (int);
+		const uintptr_t InstallOneshotTimer (uint64_t);
 		const uintptr_t ConnectToServer (const char *, int, const char *, int);
 		const uintptr_t ConnectToUnixServer (const char *);
 
 		const uintptr_t CreateTcpServer (const char *, int);
 		const uintptr_t OpenDatagramSocket (const char *, int);
 		const uintptr_t CreateUnixDomainServer (const char*);
-		const uintptr_t AttachSD (int);
+		const uintptr_t AttachSD (SOCKET);
 		const uintptr_t OpenKeyboard();
 		//const char *Popen (const char*, const char*);
 		const uintptr_t Socketpair (char* const*);
@@ -157,7 +171,7 @@ class EventMachine_t
 		void Modify (EventableDescriptor*);
 		void Deregister (EventableDescriptor*);
 
-		const uintptr_t AttachFD (int, bool);
+		const uintptr_t AttachFD (SOCKET, bool);
 		int DetachFD (EventableDescriptor*);
 
 		void ArmKqueueWriter (EventableDescriptor*);
@@ -199,6 +213,8 @@ class EventMachine_t
 		uint64_t GetRealTime();
 
 		Poller_t GetPoller() { return Poller; }
+
+		static int name2address (const char *server, int port, int socktype, struct sockaddr *addr, size_t *addr_len);
 
 	private:
 		void _RunTimers();
@@ -254,8 +270,8 @@ class EventMachine_t
 		typedef set<EventableDescriptor*> ModifiedDescriptors_t;
 		ModifiedDescriptors_t ModifiedDescriptors;
 
-		int LoopBreakerReader;
-		int LoopBreakerWriter;
+		SOCKET LoopBreakerReader;
+		SOCKET LoopBreakerWriter;
 		#ifdef OS_WIN32
 		struct sockaddr_in LoopBreakerTarget;
 		#endif
@@ -307,7 +323,7 @@ struct SelectData_t
 	int _Select();
 	void _Clear();
 
-	int maxsocket;
+	SOCKET maxsocket;
 	rb_fdset_t fdreads;
 	rb_fdset_t fdwrites;
 	rb_fdset_t fderrors;

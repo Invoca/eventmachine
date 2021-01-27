@@ -100,10 +100,10 @@ extern "C" void evma_run_machine()
 evma_install_oneshot_timer
 **************************/
 
-extern "C" const uintptr_t evma_install_oneshot_timer (int seconds)
+extern "C" const uintptr_t evma_install_oneshot_timer (uint64_t milliseconds)
 {
 	ensure_eventmachine("evma_install_oneshot_timer");
-	return EventMachine->InstallOneshotTimer (seconds);
+	return EventMachine->InstallOneshotTimer (milliseconds);
 }
 
 
@@ -444,6 +444,15 @@ extern "C" void evma_stop_machine()
 	EventMachine->ScheduleHalt();
 }
 
+/*****************
+evma_stopping
+*****************/
+
+extern "C" bool evma_stopping()
+{
+	ensure_eventmachine("evma_stopping");
+	return EventMachine->Stopping();
+}
 
 /**************
 evma_start_tls
@@ -461,12 +470,12 @@ extern "C" void evma_start_tls (const uintptr_t binding)
 evma_set_tls_parms
 ******************/
 
-extern "C" void evma_set_tls_parms (const uintptr_t binding, const char *privatekey_filename, const char *certchain_filename, int verify_peer)
+extern "C" void evma_set_tls_parms (const uintptr_t binding, const char *privatekey_filename, const char *certchain_filename, int verify_peer, int fail_if_no_peer_cert, const char *sni_hostname, const char *cipherlist, const char *ecdh_curve, const char *dhparam, int ssl_version)
 {
 	ensure_eventmachine("evma_set_tls_parms");
 	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
 	if (ed)
-		ed->SetTlsParms (privatekey_filename, certchain_filename, (verify_peer == 1 ? true : false));
+		ed->SetTlsParms (privatekey_filename, certchain_filename, (verify_peer == 1 ? true : false), (fail_if_no_peer_cert == 1 ? true : false), sni_hostname, cipherlist, ecdh_curve, dhparam, ssl_version);
 }
 
 /******************
@@ -480,6 +489,66 @@ extern "C" X509 *evma_get_peer_cert (const uintptr_t binding)
 	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
 	if (ed)
 		return ed->GetPeerCert();
+	return NULL;
+}
+#endif
+
+/******************
+evma_get_cipher_bits
+******************/
+
+#ifdef WITH_SSL
+extern "C" int evma_get_cipher_bits (const uintptr_t binding)
+{
+	ensure_eventmachine("evma_get_cipher_bits");
+	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
+	if (ed)
+		return ed->GetCipherBits();
+	return -1;
+}
+#endif
+
+/******************
+evma_get_cipher_name
+******************/
+
+#ifdef WITH_SSL
+extern "C" const char *evma_get_cipher_name (const uintptr_t binding)
+{
+	ensure_eventmachine("evma_get_cipher_name");
+	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
+	if (ed)
+		return ed->GetCipherName();
+	return NULL;
+}
+#endif
+
+/******************
+evma_get_cipher_protocol
+******************/
+
+#ifdef WITH_SSL
+extern "C" const char *evma_get_cipher_protocol (const uintptr_t binding)
+{
+	ensure_eventmachine("evma_get_cipher_protocol");
+	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
+	if (ed)
+		return ed->GetCipherProtocol();
+	return NULL;
+}
+#endif
+
+/******************
+evma_get_sni_hostname
+******************/
+
+#ifdef WITH_SSL
+extern "C" const char *evma_get_sni_hostname (const uintptr_t binding)
+{
+	ensure_eventmachine("evma_get_sni_hostname");
+	EventableDescriptor *ed = dynamic_cast <EventableDescriptor*> (Bindable_t::GetObject (binding));
+	if (ed)
+		return ed->GetSNIHostname();
 	return NULL;
 }
 #endif
@@ -532,10 +601,10 @@ extern "C" int evma_get_sockname (const uintptr_t binding, struct sockaddr *sa, 
 evma_get_subprocess_pid
 ***********************/
 
+#ifdef OS_UNIX
 extern "C" int evma_get_subprocess_pid (const uintptr_t binding, pid_t *pid)
 {
 	ensure_eventmachine("evma_get_subprocess_pid");
-	#ifdef OS_UNIX
 	PipeDescriptor *pd = dynamic_cast <PipeDescriptor*> (Bindable_t::GetObject (binding));
 	if (pd) {
 		return pd->GetSubprocessPid (pid) ? 1 : 0;
@@ -546,10 +615,13 @@ extern "C" int evma_get_subprocess_pid (const uintptr_t binding, pid_t *pid)
 	}
 	else
 		return 0;
-	#else
-	return 0;
-	#endif
 }
+#else
+extern "C" int evma_get_subprocess_pid (const uintptr_t binding UNUSED, pid_t *pid UNUSED)
+{
+	return 0;
+}
+#endif
 
 /**************************
 evma_get_subprocess_status

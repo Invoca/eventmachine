@@ -26,10 +26,10 @@ def append_library(libs, lib)
 end
 
 SSL_HEADS = %w(openssl/ssl.h openssl/err.h)
-SSL_LIBS = case RUBY_PLATFORM
-when /mswin|mingw|bccwin/ ; %w(ssleay32 libeay32)
-else                      ; %w(crypto ssl)
-end
+SSL_LIBS = %w(crypto ssl)
+# OpenSSL 1.1.0 and above for Windows use the Unix library names
+# OpenSSL 0.9.8 and 1.0.x for Windows use the *eay32 library names
+SSL_LIBS_WIN = RUBY_PLATFORM =~ /mswin|mingw|bccwin/ ? %w(ssleay32 libeay32) : []
 
 def dir_config_wrapper(pretty_name, name, idefault=nil, ldefault=nil)
   inc, lib = dir_config(name, idefault, ldefault)
@@ -88,36 +88,41 @@ if ENV['CROSS_COMPILING']
   end
 elsif dir_config_wrapper('OpenSSL', 'ssl')
   # If the user has provided a --with-ssl-dir argument, we must respect it or fail.
-  add_define 'WITH_SSL' if check_libs(SSL_LIBS) && check_heads(SSL_HEADS)
+  add_define 'WITH_SSL' if (check_libs(SSL_LIBS) || check_libs(SSL_LIBS_WIN)) && check_heads(SSL_HEADS)
 elsif pkg_config_wrapper('OpenSSL', 'openssl')
   # If we can detect OpenSSL by pkg-config, use it as the next-best option
-  add_define 'WITH_SSL' if check_libs(SSL_LIBS) && check_heads(SSL_HEADS)
-elsif check_libs(SSL_LIBS) && check_heads(SSL_HEADS)
+  add_define 'WITH_SSL' if (check_libs(SSL_LIBS) || check_libs(SSL_LIBS_WIN)) && check_heads(SSL_HEADS)
+elsif (check_libs(SSL_LIBS) || check_libs(SSL_LIBS_WIN)) && check_heads(SSL_HEADS)
   # If we don't even need any options to find a usable OpenSSL, go with it
   add_define 'WITH_SSL'
 elsif dir_config_search('OpenSSL', 'ssl', ['/usr/local', '/opt/local', '/usr/local/opt/openssl']) do
-    check_libs(SSL_LIBS) && check_heads(SSL_HEADS)
+    (check_libs(SSL_LIBS) || check_libs(SSL_LIBS_WIN)) && check_heads(SSL_HEADS)
   end
   # Finally, look for OpenSSL in alternate locations including MacPorts and HomeBrew
   add_define 'WITH_SSL'
 end
 
 add_define 'BUILD_FOR_RUBY'
-add_define 'HAVE_RBTRAP' if have_var('rb_trap_immediate', ['ruby.h', 'rubysig.h'])
-add_define "HAVE_TBR" if have_func('rb_thread_blocking_region')# and have_macro('RUBY_UBF_IO', 'ruby.h')
-add_define "HAVE_RB_THREAD_CALL_WITHOUT_GVL" if have_header('ruby/thread.h') && have_func('rb_thread_call_without_gvl', 'ruby/thread.h')
-add_define "HAVE_INOTIFY" if inotify = have_func('inotify_init', 'sys/inotify.h')
-add_define "HAVE_OLD_INOTIFY" if !inotify && have_macro('__NR_inotify_init', 'sys/syscall.h')
-add_define 'HAVE_WRITEV' if have_func('writev', 'sys/uio.h')
-add_define 'HAVE_RB_THREAD_FD_SELECT' if have_func('rb_thread_fd_select')
-add_define 'HAVE_RB_FDSET_T' if have_type('rb_fdset_t', 'ruby/intern.h')
-add_define 'HAVE_PIPE2' if have_func('pipe2', 'unistd.h')
-add_define 'HAVE_ACCEPT4' if have_func('accept4', 'sys/socket.h')
-add_define 'HAVE_SOCK_CLOEXEC' if have_const('SOCK_CLOEXEC', 'sys/socket.h')
 
+# Ruby features:
+
+have_var('rb_trap_immediate', ['ruby.h', 'rubysig.h'])
+have_func('rb_thread_blocking_region')
+have_func('rb_thread_call_without_gvl', 'ruby/thread.h')
+have_func('rb_thread_fd_select')
+have_type('rb_fdset_t', 'ruby/intern.h')
 have_func('rb_wait_for_single_fd')
 have_func('rb_enable_interrupt')
 have_func('rb_time_new')
+
+# System features:
+
+add_define('HAVE_INOTIFY') if inotify = have_func('inotify_init', 'sys/inotify.h')
+add_define('HAVE_OLD_INOTIFY') if !inotify && have_macro('__NR_inotify_init', 'sys/syscall.h')
+have_func('writev', 'sys/uio.h')
+have_func('pipe2', 'unistd.h')
+have_func('accept4', 'sys/socket.h')
+have_const('SOCK_CLOEXEC', 'sys/socket.h')
 
 # Minor platform details between *nix and Windows:
 
@@ -130,7 +135,7 @@ else
   OS_UNIX = true
   add_define 'OS_UNIX'
 
-  add_define "HAVE_KQUEUE" if have_header("sys/event.h") and have_header("sys/queue.h")
+  add_define "HAVE_KQUEUE" if have_header("sys/event.h") && have_header("sys/queue.h")
 end
 
 # Adjust number of file descriptors (FD) on Windows
@@ -156,13 +161,17 @@ when /mswin32/, /mingw32/, /bccwin32/
     $defs.push "-GR"
   end
 
+  # Newer versions of Ruby already define _WIN32_WINNT, which is needed
+  # to get access to newer POSIX networking functions (e.g. getaddrinfo)
+  add_define '_WIN32_WINNT=0x0501' unless have_func('getaddrinfo')
+
 when /solaris/
   add_define 'OS_SOLARIS8'
   check_libs(%w[nsl socket], true)
 
   # If Ruby was compiled for 32-bits, then select() can only handle 1024 fds
   # There is an alternate function, select_large_fdset, that supports more.
-  add_define 'HAVE_SELECT_LARGE_FDSET' if have_func('select_large_fdset', 'sys/select.h')
+  have_func('select_large_fdset', 'sys/select.h')
 
   if CONFIG['CC'] == 'cc' && (
      `cc -flags 2>&1` =~ /Sun/ || # detect SUNWspro compiler
@@ -202,7 +211,7 @@ when /linux/
   CONFIG['LDSHARED'] = "$(CXX) -shared"
 
 when /aix/
-  CONFIG['LDSHARED'] = "$(CXX) -shared -Wl,-G -Wl,-brtl"
+  CONFIG['LDSHARED'] = "$(CXX) -Wl,-bstatic -Wl,-bdynamic -Wl,-G -Wl,-brtl"
 
 when /cygwin/
   # For rubies built with Cygwin, CXX may be set to CC, which is just

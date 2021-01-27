@@ -93,13 +93,29 @@ class TestBasic < Test::Unit::TestCase
     end
   end
 
-  def test_unbind_error
+  def test_unbind_error_during_stop
     assert_raises( UnbindError::ERR ) {
       EM.run {
         EM.start_server "127.0.0.1", @port
-        EM.connect "127.0.0.1", @port, UnbindError
+        EM.connect "127.0.0.1", @port, UnbindError do
+          EM.stop
+        end
       }
     }
+  end
+
+  def test_unbind_error
+    EM.run {
+      EM.error_handler do |e|
+        assert(e.is_a?(UnbindError::ERR))
+        EM.stop
+      end
+      EM.start_server "127.0.0.1", @port
+      EM.connect "127.0.0.1", @port, UnbindError
+    }
+
+    # Remove the error handler before the next test
+    EM.error_handler(nil)
   end
 
   module BrsTestSrv
@@ -131,7 +147,9 @@ class TestBasic < Test::Unit::TestCase
   end
 
   def test_bind_connect
-    local_ip = UDPSocket.open {|s| s.connect('google.com', 80); s.addr.last }
+    pend('FIXME: this test is broken on Windows') if windows?
+
+    local_ip = UDPSocket.open {|s| s.connect('localhost', 80); s.addr.last }
 
     bind_port = next_port
 
@@ -154,6 +172,38 @@ class TestBasic < Test::Unit::TestCase
 
     assert_equal bind_port, port
     assert_equal local_ip, ip
+  end
+
+  def test_invalid_address_bind_connect_dst
+    e = nil
+    EM.run do
+      begin
+        EM.bind_connect('localhost', nil, 'invalid.invalid', 80)
+      rescue Exception => e
+        # capture the exception
+      ensure
+        EM.stop
+      end
+    end
+
+    assert_kind_of(EventMachine::ConnectionError, e)
+    assert_match(/unable to resolve address:.*not known/, e.message)
+  end
+
+  def test_invalid_address_bind_connect_src
+    e = nil
+    EM.run do
+      begin
+        EM.bind_connect('invalid.invalid', nil, 'localhost', 80)
+      rescue Exception => e
+        # capture the exception
+      ensure
+        EM.stop
+      end
+    end
+
+    assert_kind_of(EventMachine::ConnectionError, e)
+    assert_match(/invalid bind address:.*not known/, e.message)
   end
 
   def test_reactor_thread?
@@ -244,30 +294,6 @@ class TestBasic < Test::Unit::TestCase
     assert_equal 1, num_close_scheduled
   end
 
-  def test_fork_safe
-    omit_if(jruby?)
-    omit_if(rbx?, 'Omitting test on Rubinius because it hangs for unknown reasons')
-
-    read, write = IO.pipe
-    EM.run do
-      fork do
-        write.puts "forked"
-        EM.run do
-          EM.next_tick do
-            write.puts "EM ran"
-            EM.stop
-          end
-        end
-      end
-      EM.stop
-    end
-    assert_equal "forked\n", read.readline
-    assert_equal "EM ran\n", read.readline
-  ensure
-    read.close rescue nil
-    write.close rescue nil
-  end
-
   def test_error_handler_idempotent # issue 185
     errors = []
     ticks = []
@@ -285,6 +311,9 @@ class TestBasic < Test::Unit::TestCase
       end
       EM.add_timer(0.001) { EM.stop }
     end
+
+    # Remove the error handler before the next test
+    EM.error_handler(nil)
 
     assert_equal 1, errors.size
     assert_equal [:first, :second], ticks

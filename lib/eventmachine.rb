@@ -183,6 +183,7 @@ module EventMachine
       # Clean up reactor state so a new reactor boots up in this child.
       stop_event_loop
       release_machine
+      cleanup_machine
       @reactor_running = false
     end
 
@@ -198,14 +199,15 @@ module EventMachine
       @next_tick_queue ||= []
       @tails ||= []
       begin
-        @reactor_pid = Process.pid
-        @reactor_running = true
         initialize_event_machine
+        @reactor_pid = Process.pid
+        @reactor_thread = Thread.current
+        @reactor_running = true
+
         (b = blk || block) and add_timer(0, b)
         if @next_tick_queue && !@next_tick_queue.empty?
           add_timer(0) { signal_loopbreak }
         end
-        @reactor_thread = Thread.current
 
         # Rubinius needs to come back into "Ruby space" for GC to work,
         # so we'll crank the machine here.
@@ -220,30 +222,8 @@ module EventMachine
           @tails.pop.call
         end
 
-        begin
-          release_machine
-        ensure
-          if @threadpool
-            @threadpool.each { |t| t.exit }
-            @threadpool.each do |t|
-              next unless t.alive?
-              begin
-                # Thread#kill! does not exist on 1.9 or rbx, and raises
-                # NotImplemented on jruby
-                t.kill!
-              rescue NoMethodError, NotImplementedError
-                t.kill
-                # XXX t.join here?
-              end
-            end
-            @threadqueue = nil
-            @resultqueue = nil
-            @threadpool = nil
-            @all_threads_spawned = false
-          end
-
-          @next_tick_queue = []
-        end
+        release_machine
+        cleanup_machine
         @reactor_running = false
         @reactor_thread = nil
       end
@@ -288,13 +268,30 @@ module EventMachine
     # Original patch by Aman Gupta.
     #
     Kernel.fork do
-      if self.reactor_running?
-        self.stop_event_loop
-        self.release_machine
+      if reactor_running?
+        stop_event_loop
+        release_machine
+        cleanup_machine
         @reactor_running = false
+        @reactor_thread = nil
       end
-      self.run block
+      run block
     end
+  end
+
+  # Clean up Ruby space following a release_machine
+  def self.cleanup_machine
+    if @threadpool && !@threadpool.empty?
+      # Tell the threads to stop
+      @threadpool.each { |t| t.exit }
+      # Join the threads or bump the stragglers one more time
+      @threadpool.each { |t| t.join 0.01 || t.exit }
+    end
+    @threadpool = nil
+    @threadqueue = nil
+    @resultqueue = nil
+    @all_threads_spawned = false
+    @next_tick_queue = []
   end
 
   # Adds a block to call as the reactor is shutting down.
@@ -1010,7 +1007,7 @@ module EventMachine
         # do some work during the next_tick. The only mechanism we have from the
         # ruby side is next_tick itself, although ideally, we'd just drop a byte
         # on the loopback descriptor.
-        EM.next_tick {} if exception_raised
+        next_tick {} if exception_raised
       end
     end
   end
@@ -1019,11 +1016,14 @@ module EventMachine
   # EventMachine.defer is used for integrating blocking operations into EventMachine's control flow.
   # The action of {.defer} is to take the block specified in the first parameter (the "operation")
   # and schedule it for asynchronous execution on an internal thread pool maintained by EventMachine.
-  # When the operation completes, it will pass the result computed by the block (if any)
-  # back to the EventMachine reactor. Then, EventMachine calls the block specified in the
-  # second parameter to {.defer} (the "callback"), as part of its normal event handling loop.
-  # The result computed by the operation block is passed as a parameter to the callback.
-  # You may omit the callback parameter if you don't need to execute any code after the operation completes.
+  # When the operation completes, it will pass the result computed by the block (if any) back to the
+  # EventMachine reactor. Then, EventMachine calls the block specified in the second parameter to
+  # {.defer} (the "callback"), as part of its normal event handling loop. The result computed by the
+  # operation block is passed as a parameter to the callback. You may omit the callback parameter if
+  # you don't need to execute any code after the operation completes. If the operation raises an
+  # unhandled exception, the exception will be passed to the third parameter to {.defer} (the
+  # "errback"), as part of its normal event handling loop. If no errback is provided, the exception
+  # will be allowed to blow through to the main thread immediately.
   #
   # ## Caveats ##
   #
@@ -1037,6 +1037,11 @@ module EventMachine
   # the number of threads in its pool, so if you do this enough times, your subsequent deferred
   # operations won't get a chance to run.
   #
+  # The threads within the EventMachine's thread pool have abort_on_exception set to true. As a result,
+  # if an unhandled exception is raised by the deferred operation and an errback is not provided, it
+  # will blow through to the main thread immediately. If the main thread is within an indiscriminate
+  # rescue block at that time, the exception could be handled improperly by the main thread.
+  #
   # @example
   #
   #  operation = proc {
@@ -1046,14 +1051,18 @@ module EventMachine
   #  callback = proc {|result|
   #    # do something with result here, such as send it back to a network client.
   #  }
+  #  errback = proc {|error|
+  #    # do something with error here, such as re-raising or logging.
+  #  }
   #
-  #  EventMachine.defer(operation, callback)
+  #  EventMachine.defer(operation, callback, errback)
   #
   # @param [#call] op       An operation you want to offload to EventMachine thread pool
   # @param [#call] callback A callback that will be run on the event loop thread after `operation` finishes.
+  # @param [#call] errback  An errback that will be run on the event loop thread after `operation` raises an exception.
   #
   # @see EventMachine.threadpool_size
-  def self.defer op = nil, callback = nil, &blk
+  def self.defer op = nil, callback = nil, errback = nil, &blk
     # OBSERVE that #next_tick hacks into this mechanism, so don't make any changes here
     # without syncing there.
     #
@@ -1070,7 +1079,7 @@ module EventMachine
       spawn_threadpool
     end
 
-    @threadqueue << [op||blk,callback]
+    @threadqueue << [op||blk,callback,errback]
   end
 
 
@@ -1081,15 +1090,21 @@ module EventMachine
         Thread.current.abort_on_exception = true
         while true
           begin
-            op, cback = *@threadqueue.pop
+            op, cback, eback = *@threadqueue.pop
           rescue ThreadError
             $stderr.puts $!.message
             break # Ruby 2.0 may fail at Queue.pop
           end
-          result = op.call
-          if cback
-            @resultqueue << [result, cback]
-            EventMachine.signal_loopbreak
+          begin
+            result = op.call
+            if cback
+              @resultqueue << [result, cback]
+              signal_loopbreak
+            end
+          rescue Exception => error
+            raise error unless eback
+            @resultqueue << [error, eback]
+            signal_loopbreak
           end
         end
       end
@@ -1548,16 +1563,30 @@ module EventMachine
             rescue Errno::EBADF, IOError
             end
           end
-        rescue
-          @wrapped_exception = $!
-          stop
+        # As noted above, unbind absolutely must not raise an exception or the reactor will crash.
+        # If there is no EM.error_handler, or if the error_handler retrows, then stop the reactor,
+        # stash the exception in $wrapped_exception, and the exception will be raised after the
+        # reactor is cleaned up (see the last line of self.run).
+        rescue Exception => error
+          if instance_variable_defined? :@error_handler
+            begin
+              @error_handler.call error
+              # No need to stop unless error_handler rethrows
+            rescue Exception => error
+              @wrapped_exception = error
+              stop
+            end
+          else
+            @wrapped_exception = error
+            stop
+          end
         end
       elsif c = @acceptors.delete( conn_binding )
         # no-op
       else
         if $! # Bubble user generated errors.
           @wrapped_exception = $!
-          EM.stop
+          stop
         else
           raise ConnectionNotBound, "received ConnectionUnbound for an unknown signature: #{conn_binding}"
         end
@@ -1575,6 +1604,12 @@ module EventMachine
     elsif opcode == ConnectionCompleted
       c = @conns[conn_binding] or raise ConnectionNotBound, "received ConnectionCompleted for unknown signature: #{conn_binding}"
       c.connection_completed
+    elsif opcode == SslHandshakeCompleted
+      c = @conns[conn_binding] or raise ConnectionNotBound, "received SslHandshakeCompleted for unknown signature: #{conn_binding}"
+      c.ssl_handshake_completed
+    elsif opcode == SslVerify
+      c = @conns[conn_binding] or raise ConnectionNotBound, "received SslVerify for unknown signature: #{conn_binding}"
+      c.close_connection if c.ssl_verify_peer(data) == false
     elsif opcode == TimerFired
       t = @timers.delete( data )
       return if t == false # timer cancelled
