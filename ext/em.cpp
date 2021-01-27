@@ -544,7 +544,7 @@ EventMachine_t::ClearHeartbeat
 void EventMachine_t::ClearHeartbeat(uint64_t key, EventableDescriptor* ed)
 {
 	Heartbeats_t::iterator it;
-	pair<Heartbeats_t::iterator,Heartbeats_t::iterator> ret;
+	std::pair<Heartbeats_t::iterator,Heartbeats_t::iterator> ret;
 	std::multimap<uint64_t,EventableDescriptor*>::iterator it;
 	std::pair<std::multimap<uint64_t,EventableDescriptor*>::iterator,std::multimap<uint64_t,EventableDescriptor*>::iterator> ret;
 	ret = Heartbeats.equal_range (key);
