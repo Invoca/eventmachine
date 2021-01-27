@@ -989,7 +989,7 @@ module EventMachine
   def self.run_deferred_callbacks
     until (@resultqueue ||= []).empty?
       result, cback = @resultqueue.pop
-      cback.call(result)
+      cback.call(result) if cback
     end
 
     # Capture the size at the start of this tick...
