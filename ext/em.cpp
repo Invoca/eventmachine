@@ -550,7 +550,7 @@ EventMachine_t::ClearHeartbeat
 void EventMachine_t::ClearHeartbeat(uint64_t key, EventableDescriptor* ed)
 {
 	Heartbeats_t::iterator it;
-	pair<Heartbeats_t::iterator,Heartbeats_t::iterator> ret;
+	std::pair<Heartbeats_t::iterator,Heartbeats_t::iterator> ret;
 	ret = Heartbeats.equal_range (key);
 	for (it = ret.first; it != ret.second; ++it) {
 		if (it->second == ed) {
@@ -1124,7 +1124,7 @@ const uintptr_t EventMachine_t::InstallOneshotTimer (uint64_t milliseconds)
 	#ifndef HAVE_MAKE_PAIR
 	Timers_t::iterator i = Timers.insert (Timers_t::value_type (fire_at, t));
 	#else
-	Timers_t::iterator i = Timers.insert (make_pair (fire_at, t));
+	Timers_t::iterator i = Timers.insert (std::make_pair (fire_at, t));
 	#endif
 	return i->second.GetBinding();
 }

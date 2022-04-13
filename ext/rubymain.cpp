@@ -271,7 +271,7 @@ static void event_callback_wrapper (const uintptr_t signature, int tick_type, co
     VALUE callback_sym = Qnil;
 
 	if (!rb_ivar_defined(EmModule, Intern_at_error_handler))
-		callback_sym = event_callback(&e);
+		callback_sym = event_callback((VALUE)&e);
 	else
 		callback_sym = rb_rescue((VALUE (*)(ANYARGS))event_callback, (VALUE)&e, (VALUE (*)(ANYARGS))event_error_handler, Qnil);
 

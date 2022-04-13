@@ -195,25 +195,25 @@ class EventMachine_t
 		class Timer_t: public Bindable_t {
 		};
 
-		typedef multimap<uint64_t, Timer_t> Timers_t;
+		typedef std::multimap<uint64_t, Timer_t> Timers_t;
 		Timers_t Timers;
 
-		typedef multimap<uint64_t, EventableDescriptor*> Heartbeats_t;
+		typedef std::multimap<uint64_t, EventableDescriptor*> Heartbeats_t;
 		Heartbeats_t Heartbeats;
 
-		typedef map<int, Bindable_t*> Files_t;
+		typedef std::map<int, Bindable_t*> Files_t;
 		Files_t Files;
 
-		typedef map<int, Bindable_t*> Pids_t;
+		typedef std::map<int, Bindable_t*> Pids_t;
 		Pids_t Pids;
 
-		typedef vector<EventableDescriptor*> Descriptors_t;
+		typedef std::vector<EventableDescriptor*> Descriptors_t;
 		Descriptors_t Descriptors;
 
-		typedef vector<EventableDescriptor*> NewDescriptors_t;
+		typedef std::vector<EventableDescriptor*> NewDescriptors_t;
 		NewDescriptors_t NewDescriptors;
 
-		typedef set<EventableDescriptor*> ModifiedDescriptors_t;
+		typedef std::set<EventableDescriptor*> ModifiedDescriptors_t;
 		ModifiedDescriptors_t ModifiedDescriptors;
 
 		SOCKET LoopBreakerReader;
