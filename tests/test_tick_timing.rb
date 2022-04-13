@@ -1,4 +1,4 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestTickTiming < Test::Unit::TestCase
   MICROSECONDS_PER_SECOND = 1_000_000.0
