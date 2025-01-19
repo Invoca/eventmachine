@@ -1,9 +1,10 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 require 'tempfile'
 
 class TestFileWatch < Test::Unit::TestCase
   if windows?
     def test_watch_file_raises_unsupported_error
+      pend("\nFIXME: Windows as of 2018-06-23 on 32 bit >= 2.4 (#{RUBY_VERSION} #{RUBY_PLATFORM})") if RUBY_PLATFORM[/i386-mingw/] && RUBY_VERSION >= '2.4'
       assert_raises(EM::Unsupported) do
         EM.run do
           file = Tempfile.new("fake_file")
@@ -34,6 +35,7 @@ class TestFileWatch < Test::Unit::TestCase
     end
 
     def test_events
+      pend('FIXME: EM.watch_filename is broken in pure ruby mode') if pure_ruby_mode?
       omit_if(solaris?)
       EM.run{
         file = Tempfile.new('em-watch')
@@ -54,6 +56,26 @@ class TestFileWatch < Test::Unit::TestCase
       assert($modified)
       assert($deleted)
       assert($unbind)
+    end
+
+    # Refer: https://github.com/eventmachine/eventmachine/issues/512
+    def test_invalid_signature
+      pend('FIXME: EM.watch_filename is broken in pure ruby mode') if pure_ruby_mode?
+      # This works fine with kqueue, only fails with linux inotify.
+      omit_if(EM.kqueue?)
+
+      EM.run {
+        file = Tempfile.new('foo')
+
+        w1 = EventMachine.watch_file(file.path)
+        w2 = EventMachine.watch_file(file.path)
+
+        assert_raise EventMachine::InvalidSignature do
+          w2.stop_watching
+        end
+        w1.stop_watching rescue nil
+        EM.stop
+      }
     end
   else
     warn "EM.watch_file not implemented, skipping tests in #{__FILE__}"

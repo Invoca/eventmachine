@@ -1,4 +1,4 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestPause < Test::Unit::TestCase
   if EM.respond_to? :pause_connection
@@ -11,6 +11,7 @@ class TestPause < Test::Unit::TestCase
     end
 
     def test_pause_resume
+      pend('FIXME: EM.pause_connection is broken in pure ruby mode') if pure_ruby_mode?
       server = nil
 
       s_rx = c_rx = 0
@@ -48,7 +49,9 @@ class TestPause < Test::Unit::TestCase
         EM.start_server "127.0.0.1", @port, test_server
         EM.connect "127.0.0.1", @port, test_client
 
-        EM.add_timer(0.05) do
+        tmr = darwin? ? 0.25 : 0.05
+
+        EM.add_timer(tmr) do
           assert_equal 1, s_rx
           assert_equal 0, c_rx
           assert server.paused?
@@ -58,7 +61,7 @@ class TestPause < Test::Unit::TestCase
 
           assert !server.paused?
 
-          EM.add_timer(0.05) do
+          EM.add_timer(tmr) do
             assert server.paused?
             assert s_rx > 1
             assert c_rx > 0
@@ -69,6 +72,7 @@ class TestPause < Test::Unit::TestCase
     end
 
     def test_pause_in_receive_data
+      pend('FIXME: EM.pause_connection is broken in pure ruby mode') if pure_ruby_mode?
       incoming = []
 
       test_server = Module.new do

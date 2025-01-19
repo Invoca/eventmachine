@@ -49,24 +49,26 @@ bool SetSocketNonblocking (SOCKET sd)
 SetFdCloexec
 ************/
 
+#ifdef OS_UNIX
 bool SetFdCloexec (int fd)
 {
-	#ifdef OS_UNIX
 	int flags = fcntl(fd, F_GETFD, 0);
 	assert (flags >= 0);
 	flags |= FD_CLOEXEC;
 	return (fcntl(fd, F_SETFD, FD_CLOEXEC) == 0) ? true : false;
-	#else
-	// TODO: Windows?
-	return true;
-	#endif
 }
+#else
+bool SetFdCloexec (int fd UNUSED)
+{
+	return true;
+}
+#endif
 
 /****************************************
 EventableDescriptor::EventableDescriptor
 ****************************************/
 
-EventableDescriptor::EventableDescriptor (int sd, EventMachine_t *em):
+EventableDescriptor::EventableDescriptor (SOCKET sd, EventMachine_t *em):
 	bCloseNow (false),
 	bCloseAfterWriting (false),
 	MySocket (sd),
@@ -82,6 +84,7 @@ EventableDescriptor::EventableDescriptor (int sd, EventMachine_t *em):
 	MyEventMachine (em),
 	PendingConnectTimeout(20000000),
 	InactivityTimeout (0),
+	NextHeartbeat (0),
 	bPaused (false)
 {
 	/* There are three ways to close a socket, all of which should
@@ -110,12 +113,12 @@ EventableDescriptor::EventableDescriptor (int sd, EventMachine_t *em):
 	if (MyEventMachine == NULL)
 		throw std::runtime_error ("bad em in eventable descriptor");
 	CreatedAt = MyEventMachine->GetCurrentLoopTime();
+	LastActivity = MyEventMachine->GetCurrentLoopTime();
 
 	#ifdef HAVE_EPOLL
 	EpollEvent.events = 0;
 	EpollEvent.data.ptr = this;
 	#endif
-	LastActivity = MyEventMachine->GetCurrentLoopTime();
 }
 
 
@@ -123,7 +126,7 @@ EventableDescriptor::EventableDescriptor (int sd, EventMachine_t *em):
 EventableDescriptor::~EventableDescriptor
 *****************************************/
 
-EventableDescriptor::~EventableDescriptor()
+EventableDescriptor::~EventableDescriptor() NO_EXCEPT_FALSE
 {
 	if (NextHeartbeat)
 		MyEventMachine->ClearHeartbeat(NextHeartbeat, this);
@@ -189,7 +192,7 @@ void EventableDescriptor::Close()
 	 * the fd associated with this EventableDescriptor is
 	 * closing.
 	 *
-	 * EventMachine also never closes fds for STDIN, STDOUT and 
+	 * EventMachine also never closes fds for STDIN, STDOUT and
 	 * STDERR (0, 1 & 2)
 	 */
 
@@ -233,8 +236,14 @@ EventableDescriptor::ScheduleClose
 
 void EventableDescriptor::ScheduleClose (bool after_writing)
 {
-	if (IsCloseScheduled())
+	if (IsCloseScheduled()) {
+		if (!after_writing) {
+			// If closing has become more urgent, then upgrade the scheduled
+			// after_writing close to one NOW.
+			bCloseNow = true;
+		}
 		return;
+	}
 	MyEventMachine->NumCloseScheduled++;
 	// KEEP THIS SYNCHRONIZED WITH ::IsCloseScheduled.
 	if (after_writing)
@@ -252,6 +261,139 @@ bool EventableDescriptor::IsCloseScheduled()
 {
 	// KEEP THIS SYNCHRONIZED WITH ::ScheduleClose.
 	return (bCloseNow || bCloseAfterWriting);
+}
+
+
+/***********************************
+EventableDescriptor::EnableKeepalive
+***********************************/
+int EventableDescriptor::EnableKeepalive(int idle, int intvl, int cnt)
+{
+	int ret;
+
+#ifdef OS_WIN32
+	DWORD len;
+	struct tcp_keepalive args;
+
+	args.onoff = 1;
+
+	if (idle > 0)
+		args.keepalivetime = idle * 1000;
+	if (intvl > 0)
+		args.keepaliveinterval = intvl * 1000;
+
+	ret = WSAIoctl(MySocket, SIO_KEEPALIVE_VALS, &args, sizeof(args), NULL, 0, &len, NULL, NULL);
+	if (ret < 0) {
+		int err = WSAGetLastError();
+		char buf[200];
+		buf[0] = '\0';
+
+		FormatMessage (FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+			NULL, err, MAKELANGID (LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof(buf), NULL);
+
+		if (! buf[0])
+			snprintf (buf, sizeof(buf)-1, "unable to enable keepalive: %d", err);
+
+		throw std::runtime_error (buf);
+	}
+
+#else
+	int val = 1;
+
+	// All the Unixen
+	ret = setsockopt(MySocket, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val));
+	if (ret < 0) {
+		char buf[200];
+		snprintf (buf, sizeof(buf)-1, "unable to enable keepalive: %s", strerror(errno));
+		throw std::runtime_error (buf);
+	}
+
+	#ifdef TCP_KEEPALIVE
+	// BSDs and Mac OS X: idle time used when SO_KEEPALIVE is enabled
+	// 0 means use the system default value, so we let it through
+	if (idle >= 0) {
+		ret = setsockopt(MySocket, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+		if (ret < 0) {
+			char buf[200];
+			snprintf (buf, sizeof(buf)-1, "unable set keepalive idle: %s", strerror(errno));
+			throw std::runtime_error (buf);
+		}
+	}
+	#endif
+	#ifdef TCP_KEEPIDLE
+	// Linux: interval between last data pkt and first keepalive pkt
+	if (idle > 0) {
+		ret = setsockopt(MySocket, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+		if (ret < 0) {
+			char buf[200];
+			snprintf (buf, sizeof(buf)-1, "unable set keepalive idle: %s", strerror(errno));
+			throw std::runtime_error (buf);
+		}
+	}
+	#endif
+	#ifdef TCP_KEEPINTVL
+	// Linux (and recent BSDs, Mac OS X, Solaris): interval between keepalives
+	if (intvl > 0) {
+		ret = setsockopt(MySocket, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+		if (ret < 0) {
+			char buf[200];
+			snprintf (buf, sizeof(buf)-1, "unable set keepalive interval: %s", strerror(errno));
+			throw std::runtime_error (buf);
+		}
+	}
+	#endif
+	#ifdef TCP_KEEPCNT
+	// Linux (and recent BSDs, Mac OS X, Solaris): number of dropped probes before disconnect
+	if (cnt > 0) {
+		ret = setsockopt(MySocket, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+		if (ret < 0) {
+			char buf[200];
+			snprintf (buf, sizeof(buf)-1, "unable set keepalive count: %s", strerror(errno));
+			throw std::runtime_error (buf);
+		}
+	}
+	#endif
+#endif
+
+	return ret;
+}
+
+/***********************************
+EventableDescriptor::DisableKeepalive
+***********************************/
+int EventableDescriptor::DisableKeepalive()
+{
+	int ret;
+
+#ifdef OS_WIN32
+	DWORD len;
+	struct tcp_keepalive args;
+	args.onoff = 0;
+	ret = WSAIoctl(MySocket, SIO_KEEPALIVE_VALS, &args, sizeof(args), NULL, 0, &len, NULL, NULL);
+	if (ret < 0) {
+		int err = WSAGetLastError();
+		char buf[200];
+		buf[0] = '\0';
+
+		FormatMessage (FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+			NULL, err, MAKELANGID (LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof(buf), NULL);
+
+		if (! buf[0])
+			snprintf (buf, sizeof(buf)-1, "unable to enable keepalive: %d", err);
+
+		throw std::runtime_error (buf);
+	}
+#else
+	int val = 0;
+	ret = setsockopt(MySocket, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val));
+	if (ret < 0) {
+		char buf[200];
+		snprintf (buf, sizeof(buf)-1, "unable to disable keepalive: %s", strerror(errno));
+		throw std::runtime_error (buf);
+	}
+#endif
+
+	return ret;
 }
 
 
@@ -311,7 +453,7 @@ void EventableDescriptor::_GenericInboundDispatch(const char *buf, unsigned long
 
 	if (ProxyTarget) {
 		if (BytesToProxy > 0) {
-			unsigned long proxied = min(BytesToProxy, size);
+			unsigned long proxied = std::min(BytesToProxy, size);
 			ProxyTarget->SendOutboundData(buf, proxied);
 			ProxiedBytes += (unsigned long) proxied;
 			BytesToProxy -= proxied;
@@ -329,6 +471,45 @@ void EventableDescriptor::_GenericInboundDispatch(const char *buf, unsigned long
 	} else {
 		(*EventCallback)(GetBinding(), EM_CONNECTION_READ, buf, size);
 	}
+}
+
+
+/*********************************
+EventableDescriptor::_GenericGetPeername
+*********************************/
+
+bool EventableDescriptor::_GenericGetPeername (struct sockaddr *s, socklen_t *len)
+{
+	if (!s)
+		return false;
+
+	int gp = getpeername (GetSocket(), s, len);
+	if (gp == -1) {
+		char buf[200];
+		snprintf (buf, sizeof(buf)-1, "unable to get peer name: %s", strerror(errno));
+		throw std::runtime_error (buf);
+	}
+
+	return true;
+}
+
+/*********************************
+EventableDescriptor::_GenericGetSockname
+*********************************/
+
+bool EventableDescriptor::_GenericGetSockname (struct sockaddr *s, socklen_t *len)
+{
+	if (!s)
+		return false;
+
+	int gp = getsockname (GetSocket(), s, len);
+	if (gp == -1) {
+		char buf[200];
+		snprintf (buf, sizeof(buf)-1, "unable to get sock name: %s", strerror(errno));
+		throw std::runtime_error (buf);
+	}
+
+	return true;
 }
 
 
@@ -387,7 +568,7 @@ uint64_t EventableDescriptor::GetNextHeartbeat()
 ConnectionDescriptor::ConnectionDescriptor
 ******************************************/
 
-ConnectionDescriptor::ConnectionDescriptor (int sd, EventMachine_t *em):
+ConnectionDescriptor::ConnectionDescriptor (SOCKET sd, EventMachine_t *em):
 	EventableDescriptor (sd, em),
 	bConnectPending (false),
 	bNotifyReadable (false),
@@ -440,6 +621,9 @@ void ConnectionDescriptor::_UpdateEvents()
 void ConnectionDescriptor::_UpdateEvents(bool read, bool write)
 {
 	if (MySocket == INVALID_SOCKET)
+		return;
+
+	if (!read && !write)
 		return;
 
 	#ifdef HAVE_EPOLL
@@ -768,7 +952,7 @@ void ConnectionDescriptor::Read()
 	 * come here more than once after being closed. (FCianfrocca)
 	 */
 
-	int sd = GetSocket();
+	SOCKET sd = GetSocket();
 	//assert (sd != INVALID_SOCKET); (original, removed 22Aug06)
 	if (sd == INVALID_SOCKET) {
 		assert (!bReadAttemptedAfterClose);
@@ -873,6 +1057,9 @@ void ConnectionDescriptor::_DispatchInboundData (const char *buffer, unsigned lo
 
 		// If our SSL handshake had a problem, shut down the connection.
 		if (s == -2) {
+			#ifndef EPROTO // OpenBSD does not have EPROTO
+			#define EPROTO EINTR
+			#endif
 			#ifdef OS_UNIX
 			UnbindReasonCode = EPROTO;
 			#endif
@@ -1005,12 +1192,12 @@ void ConnectionDescriptor::_WriteOutboundData()
 	 * and when we get here. So this condition is not an error.
 	 *
 	 * 20Jul07, added the same kind of protection against an invalid socket
-	 * that is at the top of ::Read. Not entirely how this could happen in 
+	 * that is at the top of ::Read. Not entirely how this could happen in
 	 * real life (connection-reset from the remote peer, perhaps?), but I'm
 	 * doing it to address some reports of crashing under heavy loads.
 	 */
 
-	int sd = GetSocket();
+	SOCKET sd = GetSocket();
 	//assert (sd != INVALID_SOCKET);
 	if (sd == INVALID_SOCKET) {
 		assert (!bWriteAttemptedAfterClose);
@@ -1094,7 +1281,7 @@ void ConnectionDescriptor::_WriteOutboundData()
 	#ifdef HAVE_WRITEV
 	if (!err) {
 		unsigned int sent = bytes_written;
-		deque<OutboundPage>::iterator op = OutboundPages.begin();
+		std::deque<OutboundPage>::iterator op = OutboundPages.begin();
 
 		for (int i = 0; i < iovcnt; i++) {
 			if (iov[i].iov_len <= sent) {
@@ -1180,7 +1367,7 @@ void ConnectionDescriptor::StartTls()
 	if (SslBox)
 		throw std::runtime_error ("SSL/TLS already running on connection");
 
-	SslBox = new SslBox_t (bIsServer, PrivateKeyFilename, CertChainFilename, bSslVerifyPeer, GetBinding());
+	SslBox = new SslBox_t (bIsServer, PrivateKeyFilename, PrivateKey, PrivateKeyPass, CertChainFilename, Cert, bSslVerifyPeer, bSslFailIfNoPeerCert, SniHostName, CipherList, EcdhCurve, DhParam, Protocols, GetBinding());
 	_DispatchCiphertext();
 
 }
@@ -1197,18 +1384,35 @@ ConnectionDescriptor::SetTlsParms
 *********************************/
 
 #ifdef WITH_SSL
-void ConnectionDescriptor::SetTlsParms (const char *privkey_filename, const char *certchain_filename, bool verify_peer)
+void ConnectionDescriptor::SetTlsParms (const char *privkey_filename, const char *privkey, const char *privkeypass, const char *certchain_filename, const char *cert, bool verify_peer, bool fail_if_no_peer_cert, const char *sni_hostname, const char *cipherlist, const char *ecdh_curve, const char *dhparam, int protocols)
 {
 	if (SslBox)
 		throw std::runtime_error ("call SetTlsParms before calling StartTls");
 	if (privkey_filename && *privkey_filename)
 		PrivateKeyFilename = privkey_filename;
+	if (privkey && *privkey)
+		PrivateKey = privkey;
+	if (privkeypass && *privkeypass)
+		PrivateKeyPass = privkeypass;
 	if (certchain_filename && *certchain_filename)
 		CertChainFilename = certchain_filename;
-	bSslVerifyPeer = verify_peer;
+	if (cert && *cert)
+		Cert = cert;
+	bSslVerifyPeer     = verify_peer;
+	bSslFailIfNoPeerCert = fail_if_no_peer_cert;
+
+	if (sni_hostname && *sni_hostname)
+		SniHostName = sni_hostname;
+	if (cipherlist && *cipherlist)
+		CipherList = cipherlist;
+	if (ecdh_curve && *ecdh_curve)
+		EcdhCurve = ecdh_curve;
+	if (dhparam && *dhparam)
+		DhParam = dhparam;
+	Protocols = protocols;
 }
 #else
-void ConnectionDescriptor::SetTlsParms (const char *privkey_filename UNUSED, const char *certchain_filename UNUSED, bool verify_peer UNUSED)
+void ConnectionDescriptor::SetTlsParms (const char *privkey_filename UNUSED, const char *privkey UNUSED, const char *privkeypass UNUSED, const char *certchain_filename UNUSED, const char *cert UNUSED, bool verify_peer UNUSED, bool fail_if_no_peer_cert UNUSED, const char *sni_hostname UNUSED, const char *cipherlist UNUSED, const char *ecdh_curve UNUSED, const char *dhparam UNUSED, int protocols UNUSED)
 {
 	throw std::runtime_error ("Encryption not available on this event-machine");
 }
@@ -1225,6 +1429,62 @@ X509 *ConnectionDescriptor::GetPeerCert()
 	if (!SslBox)
 		throw std::runtime_error ("SSL/TLS not running on this connection");
 	return SslBox->GetPeerCert();
+}
+#endif
+
+
+/*********************************
+ConnectionDescriptor::GetCipherBits
+*********************************/
+
+#ifdef WITH_SSL
+int ConnectionDescriptor::GetCipherBits()
+{
+	if (!SslBox)
+		throw std::runtime_error ("SSL/TLS not running on this connection");
+	return SslBox->GetCipherBits();
+}
+#endif
+
+
+/*********************************
+ConnectionDescriptor::GetCipherName
+*********************************/
+
+#ifdef WITH_SSL
+const char *ConnectionDescriptor::GetCipherName()
+{
+	if (!SslBox)
+		throw std::runtime_error ("SSL/TLS not running on this connection");
+	return SslBox->GetCipherName();
+}
+#endif
+
+
+/*********************************
+ConnectionDescriptor::GetCipherProtocol
+*********************************/
+
+#ifdef WITH_SSL
+const char *ConnectionDescriptor::GetCipherProtocol()
+{
+	if (!SslBox)
+		throw std::runtime_error ("SSL/TLS not running on this connection");
+	return SslBox->GetCipherProtocol();
+}
+#endif
+
+
+/*********************************
+ConnectionDescriptor::GetSNIHostname
+*********************************/
+
+#ifdef WITH_SSL
+const char *ConnectionDescriptor::GetSNIHostname()
+{
+	if (!SslBox)
+		throw std::runtime_error ("SSL/TLS not running on this connection");
+	return SslBox->GetSNIHostname();
 }
 #endif
 
@@ -1300,7 +1560,7 @@ void ConnectionDescriptor::_DispatchCiphertext()
 		// try to put plaintext. INCOMPLETE, doesn't belong here?
 		// In SendOutboundData, we're spooling plaintext directly
 		// into SslBox. That may be wrong, we may need to buffer it
-		// up here! 
+		// up here!
 		/*
 		const char *ptr;
 		int ptr_length;
@@ -1329,6 +1589,15 @@ ConnectionDescriptor::Heartbeat
 
 void ConnectionDescriptor::Heartbeat()
 {
+	/* When TLS is enabled, it can skew the delivery of heartbeats and
+	 * the LastActivity time-keeping by hundreds of microseconds on fast
+	 * machines up to tens of thousands of microseconds on very slow
+	 * machines.  To prevent failing to timeout in a timely fashion we use
+	 * the timer-quantum to compensate for the discrepancy so the
+	 * comparisons are more likely to match when they are nearly equal.
+	 */
+	uint64_t skew = MyEventMachine->GetTimerQuantum();
+
 	/* Only allow a certain amount of time to go by while waiting
 	 * for a pending connect. If it expires, then kill the socket.
 	 * For a connected socket, close it if its inactivity timer
@@ -1343,7 +1612,7 @@ void ConnectionDescriptor::Heartbeat()
 		}
 	}
 	else {
-		if (InactivityTimeout && ((MyEventMachine->GetCurrentLoopTime() - LastActivity) >= InactivityTimeout)) {
+		if (InactivityTimeout && ((skew + MyEventMachine->GetCurrentLoopTime() - LastActivity) >= InactivityTimeout)) {
 			UnbindReasonCode = ETIMEDOUT;
 			ScheduleClose (false);
 			//bCloseNow = true;
@@ -1356,7 +1625,7 @@ void ConnectionDescriptor::Heartbeat()
 LoopbreakDescriptor::LoopbreakDescriptor
 ****************************************/
 
-LoopbreakDescriptor::LoopbreakDescriptor (int sd, EventMachine_t *parent_em):
+LoopbreakDescriptor::LoopbreakDescriptor (SOCKET sd, EventMachine_t *parent_em):
 	EventableDescriptor (sd, parent_em)
 {
 	/* This is really bad and ugly. Change someday if possible.
@@ -1403,7 +1672,7 @@ void LoopbreakDescriptor::Write()
 AcceptorDescriptor::AcceptorDescriptor
 **************************************/
 
-AcceptorDescriptor::AcceptorDescriptor (int sd, EventMachine_t *parent_em):
+AcceptorDescriptor::AcceptorDescriptor (SOCKET sd, EventMachine_t *parent_em):
 	EventableDescriptor (sd, parent_em)
 {
 	#ifdef HAVE_EPOLL
@@ -1458,20 +1727,20 @@ void AcceptorDescriptor::Read()
 	 */
 
 
-	struct sockaddr_in pin;
+	struct sockaddr_in6 pin;
 	socklen_t addrlen = sizeof (pin);
 	int accept_count = EventMachine_t::GetSimultaneousAcceptCount();
 
 	for (int i=0; i < accept_count; i++) {
-#if defined(HAVE_SOCK_CLOEXEC) && defined(HAVE_ACCEPT4)
-		int sd = accept4 (GetSocket(), (struct sockaddr*)&pin, &addrlen, SOCK_CLOEXEC);
+#if defined(HAVE_CONST_SOCK_CLOEXEC) && defined(HAVE_ACCEPT4)
+		SOCKET sd = accept4 (GetSocket(), (struct sockaddr*)&pin, &addrlen, SOCK_CLOEXEC);
 		if (sd == INVALID_SOCKET) {
 			// We may be running in a kernel where
 			// SOCK_CLOEXEC is not supported - fall back:
 			sd = accept (GetSocket(), (struct sockaddr*)&pin, &addrlen);
 		}
 #else
-		int sd = accept (GetSocket(), (struct sockaddr*)&pin, &addrlen);
+		SOCKET sd = accept (GetSocket(), (struct sockaddr*)&pin, &addrlen);
 #endif
 		if (sd == INVALID_SOCKET) {
 			// This breaks the loop when we've accepted everything on the kernel queue,
@@ -1546,28 +1815,11 @@ void AcceptorDescriptor::Heartbeat()
 }
 
 
-/*******************************
-AcceptorDescriptor::GetSockname
-*******************************/
-
-bool AcceptorDescriptor::GetSockname (struct sockaddr *s, socklen_t *len)
-{
-	bool ok = false;
-	if (s) {
-		int gp = getsockname (GetSocket(), s, len);
-		if (gp == 0)
-			ok = true;
-	}
-	return ok;
-}
-
-
-
 /**************************************
 DatagramDescriptor::DatagramDescriptor
 **************************************/
 
-DatagramDescriptor::DatagramDescriptor (int sd, EventMachine_t *parent_em):
+DatagramDescriptor::DatagramDescriptor (SOCKET sd, EventMachine_t *parent_em):
 	EventableDescriptor (sd, parent_em),
 	OutboundDataSize (0)
 {
@@ -1635,7 +1887,7 @@ DatagramDescriptor::Read
 
 void DatagramDescriptor::Read()
 {
-	int sd = GetSocket();
+	SOCKET sd = GetSocket();
 	assert (sd != INVALID_SOCKET);
 	LastActivity = MyEventMachine->GetCurrentLoopTime();
 
@@ -1651,7 +1903,7 @@ void DatagramDescriptor::Read()
 		// That's so we can put a guard byte at the end of what we send
 		// to user code.
 
-		struct sockaddr_in sin;
+		struct sockaddr_in6 sin;
 		socklen_t slen = sizeof (sin);
 		memset (&sin, 0, slen);
 
@@ -1712,7 +1964,7 @@ void DatagramDescriptor::Write()
 	 * TODO, we are currently suppressing the EMSGSIZE error!!!
 	 */
 
-	int sd = GetSocket();
+	SOCKET sd = GetSocket();
 	assert (sd != INVALID_SOCKET);
 	LastActivity = MyEventMachine->GetCurrentLoopTime();
 
@@ -1725,7 +1977,8 @@ void DatagramDescriptor::Write()
 		OutboundPage *op = &(OutboundPages[0]);
 
 		// The nasty cast to (char*) is needed because Windows is brain-dead.
-		int s = sendto (sd, (char*)op->Buffer, op->Length, 0, (struct sockaddr*)&(op->From), sizeof(op->From));
+		int s = sendto (sd, (char*)op->Buffer, op->Length, 0, (struct sockaddr*)&(op->From),
+		               (op->From.sin6_family == AF_INET6 ? sizeof (struct sockaddr_in6) : sizeof (struct sockaddr_in)));
 #ifdef OS_WIN32
 		int e = WSAGetLastError();
 #else
@@ -1837,23 +2090,10 @@ int DatagramDescriptor::SendOutboundDatagram (const char *data, unsigned long le
 	if (!address || !*address || !port)
 		return 0;
 
-	sockaddr_in pin;
-	unsigned long HostAddr;
-
-	HostAddr = inet_addr (address);
-	if (HostAddr == INADDR_NONE) {
-		// The nasty cast to (char*) is because Windows is brain-dead.
-		hostent *hp = gethostbyname ((char*)address);
-		if (!hp)
-			return 0;
-		HostAddr = ((in_addr*)(hp->h_addr))->s_addr;
-	}
-
-	memset (&pin, 0, sizeof(pin));
-	pin.sin_family = AF_INET;
-	pin.sin_addr.s_addr = HostAddr;
-	pin.sin_port = htons (port);
-
+	struct sockaddr_in6 addr_here;
+	size_t addr_here_len = sizeof addr_here;
+	if (0 != EventMachine_t::name2address (address, port, SOCK_DGRAM, (struct sockaddr *)&addr_here, &addr_here_len))
+		return -1;
 
 	if (!data && (length > 0))
 		throw std::runtime_error ("bad outbound data");
@@ -1862,7 +2102,7 @@ int DatagramDescriptor::SendOutboundDatagram (const char *data, unsigned long le
 		throw std::runtime_error ("no allocation for outbound data");
 	memcpy (buffer, data, length);
 	buffer [length] = 0;
-	OutboundPages.push_back (OutboundPage (buffer, length, pin));
+	OutboundPages.push_back (OutboundPage (buffer, length, addr_here));
 	OutboundDataSize += length;
 
 	#ifdef HAVE_EPOLL
@@ -1877,37 +2117,6 @@ int DatagramDescriptor::SendOutboundDatagram (const char *data, unsigned long le
 	#endif
 
 	return length;
-}
-
-
-/*********************************
-ConnectionDescriptor::GetPeername
-*********************************/
-
-bool ConnectionDescriptor::GetPeername (struct sockaddr *s, socklen_t *len)
-{
-	bool ok = false;
-	if (s) {
-		int gp = getpeername (GetSocket(), s, len);
-		if (gp == 0)
-			ok = true;
-	}
-	return ok;
-}
-
-/*********************************
-ConnectionDescriptor::GetSockname
-*********************************/
-
-bool ConnectionDescriptor::GetSockname (struct sockaddr *s, socklen_t *len)
-{
-	bool ok = false;
-	if (s) {
-		int gp = getsockname (GetSocket(), s, len);
-		if (gp == 0)
-			ok = true;
-	}
-	return ok;
 }
 
 
@@ -1940,29 +2149,13 @@ bool DatagramDescriptor::GetPeername (struct sockaddr *s, socklen_t *len)
 {
 	bool ok = false;
 	if (s) {
-		*len = sizeof(struct sockaddr);
-		memset (s, 0, sizeof(struct sockaddr));
+		*len = sizeof(ReturnAddress);
+		memset (s, 0, sizeof(ReturnAddress));
 		memcpy (s, &ReturnAddress, sizeof(ReturnAddress));
 		ok = true;
 	}
 	return ok;
 }
-
-/*******************************
-DatagramDescriptor::GetSockname
-*******************************/
-
-bool DatagramDescriptor::GetSockname (struct sockaddr *s, socklen_t *len)
-{
-	bool ok = false;
-	if (s) {
-		int gp = getsockname (GetSocket(), s, len);
-		if (gp == 0)
-			ok = true;
-	}
-	return ok;
-}
-
 
 
 /********************************************

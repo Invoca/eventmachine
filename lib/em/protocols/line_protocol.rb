@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module EventMachine
   module Protocols
     # LineProtocol will parse out newline terminated strings from a receive_data stream
@@ -13,10 +15,14 @@ module EventMachine
     module LineProtocol
       # @private
       def receive_data data
-        (@buf ||= '') << data
+        (@buf ||= ''.dup) << data
 
-        while @buf.slice!(/(.*?)\r?\n/)
-          receive_line($1)
+        @buf.each_line do |line|
+          if line[-1] == "\n"
+            receive_line(line.chomp)
+          else
+            @buf = line
+          end
         end
       end
 

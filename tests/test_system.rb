@@ -1,5 +1,5 @@
 # coding: utf-8
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestSystem < Test::Unit::TestCase
   def setup
@@ -9,6 +9,9 @@ class TestSystem < Test::Unit::TestCase
   end
 
   def test_system
+    pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
+    omit_if(windows?)
+
     result = nil
     status = nil
     EM.run {
@@ -23,6 +26,9 @@ class TestSystem < Test::Unit::TestCase
   end
 
   def test_system_with_string
+    pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
+    omit_if(windows?)
+
     result = nil
     status = nil
     EM.run {

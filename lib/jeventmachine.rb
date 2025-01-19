@@ -77,12 +77,29 @@ module EventMachine
   ConnectionNotifyWritable = 107
   # @private
   SslHandshakeCompleted = 108
+  # @private
+  SslVerify = 109
+
+  # @private
+  EM_PROTO_SSLv2 = 2
+  # @private
+  EM_PROTO_SSLv3 = 4
+  # @private
+  EM_PROTO_TLSv1 = 8
+  # @private
+  EM_PROTO_TLSv1_1 = 16
+  # @private
+  EM_PROTO_TLSv1_2 = 32
+
+  NULL_EM_REACTOR = com.rubyeventmachine.NullEmReactor.new
+  @em ||= NULL_EM_REACTOR
 
   # Exceptions that are defined in rubymain.cpp
   class ConnectionError < RuntimeError; end
   class ConnectionNotBound < RuntimeError; end
   class UnknownTimerFired < RuntimeError; end
   class Unsupported < RuntimeError; end
+  class InvalidPrivateKey < RuntimeError; end
 
   # This thunk class used to be called EM, but that caused conflicts with
   # the alias "EM" for module EventMachine. (FC, 20Jun08)
@@ -102,7 +119,7 @@ module EventMachine
     @em = JEM.new
   end
   def self.release_machine
-    @em = nil
+    @em = NULL_EM_REACTOR
   end
   def self.add_oneshot_timer interval
     @em.installOneshotTimer interval
@@ -125,6 +142,8 @@ module EventMachine
   end
   def self.send_data sig, data, length
     @em.sendData sig, data.to_java_bytes
+  rescue java.lang.NullPointerException
+    0
   end
   def self.send_datagram sig, data, length, address, port
     @em.sendDatagram sig, data.to_java_bytes, length, address, port
@@ -224,12 +243,12 @@ module EventMachine
       field.setAccessible(true)
       fileno = field.get(fileno)
     else
-      raise ArgumentError, 'attach_fd requires Java Channel or POSIX fileno' unless fileno.is_a? Fixnum
+      raise ArgumentError, 'attach_fd requires Java Channel or POSIX fileno' unless fileno.is_a? Integer
     end
 
     if fileno == 0
       raise "can't open STDIN as selectable in Java =("
-    elsif fileno.is_a? Fixnum
+    elsif fileno.is_a? Integer
       # 8Aug09: The following code is specific to the sun jvm's SocketChannelImpl. Is there a cross-platform
       # way of implementing this? If so, also remember to update EventableSocketChannel#close and #cleanup
       fd = FileDescriptor.new
@@ -298,4 +317,3 @@ module EventMachine
     end
   end
 end
-

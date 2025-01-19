@@ -22,10 +22,6 @@ See the file COPYING for complete licensing information.
 #define __Project__H_
 
 
-#ifdef OS_WIN32
-#pragma warning(disable:4786)
-#endif
-
 #include <iostream>
 #include <map>
 #include <set>
@@ -100,6 +96,15 @@ typedef int SOCKET;
 #include <fcntl.h>
 #include <assert.h>
 
+// Older versions of MinGW in the Ruby Dev Kit do not provide the getaddrinfo hint flags
+#ifndef AI_ADDRCONFIG
+#define AI_ADDRCONFIG  0x0400
+#endif
+
+#ifndef AI_NUMERICSERV
+#define AI_NUMERICSERV 0x0008
+#endif
+
 // Use the Win32 wrapper library that Ruby owns to be able to close sockets with the close() function
 #define RUBY_EXPORT
 #include <ruby/defines.h>
@@ -109,8 +114,6 @@ typedef int SOCKET;
 #if !defined(_MSC_VER) || _MSC_VER > 1500
 #include <stdint.h>
 #endif
-
-using namespace std;
 
 #ifdef WITH_SSL
 #include <openssl/ssl.h>

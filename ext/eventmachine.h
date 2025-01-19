@@ -37,15 +37,27 @@ extern "C" {
 		EM_SSL_VERIFY = 109,
 		EM_PROXY_TARGET_UNBOUND = 110,
 		EM_PROXY_COMPLETED = 111
+	};
 
+	enum { // SSL/TLS Protocols
+		EM_PROTO_SSLv2 = 2,
+		EM_PROTO_SSLv3 = 4,
+		EM_PROTO_TLSv1 = 8,
+		EM_PROTO_TLSv1_1 = 16,
+#ifdef TLS1_3_VERSION
+		EM_PROTO_TLSv1_2 = 32,
+		EM_PROTO_TLSv1_3 = 64
+#else
+		EM_PROTO_TLSv1_2 = 32
+#endif
 	};
 
 	void evma_initialize_library (EMCallback);
 	bool evma_run_machine_once();
 	void evma_run_machine();
 	void evma_release_library();
-	const uintptr_t evma_install_oneshot_timer (int seconds);
-	VALUE evma_get_real_time ();
+	const size_t evma_get_timer_count ();
+	const uintptr_t evma_install_oneshot_timer (uint64_t milliseconds);
 	const uintptr_t evma_connect_to_server (const char *bind_addr, int bind_port, const char *server, int port);
 	const uintptr_t evma_connect_to_unix_server (const char *server);
 
@@ -69,11 +81,15 @@ extern "C" {
 	const uintptr_t evma_attach_sd (int sd);
 	const uintptr_t evma_open_datagram_socket (const char *server, int port);
 	const uintptr_t evma_open_keyboard();
-	void evma_set_tls_parms (const uintptr_t binding, const char *privatekey_filename, const char *certchain_filenane, int verify_peer);
+	void evma_set_tls_parms (const uintptr_t binding, const char *privatekey_filename, const char *privatekey, const char *privatekeypass, const char *certchain_filename, const char *cert, int verify_peer, int fail_if_no_peer_cert, const char *sni_hostname, const char *cipherlist, const char *ecdh_curve, const char *dhparam, int protocols);
 	void evma_start_tls (const uintptr_t binding);
 
 	#ifdef WITH_SSL
 	X509 *evma_get_peer_cert (const uintptr_t binding);
+	int evma_get_cipher_bits (const uintptr_t binding);
+	const char *evma_get_cipher_name (const uintptr_t binding);
+	const char *evma_get_cipher_protocol (const uintptr_t binding);
+	const char *evma_get_sni_hostname (const uintptr_t binding);
 	void evma_accept_ssl_peer (const uintptr_t binding);
 	#endif
 
@@ -81,6 +97,8 @@ extern "C" {
 	int evma_get_sockname (const uintptr_t binding, struct sockaddr*, socklen_t*);
 	int evma_get_subprocess_pid (const uintptr_t binding, pid_t*);
 	int evma_get_subprocess_status (const uintptr_t binding, int*);
+	int evma_enable_keepalive (const uintptr_t binding, int idle, int intvl, int cnt);
+	int evma_disable_keepalive (const uintptr_t binding);
 	int evma_get_connection_count();
 	int evma_send_data_to_connection (const uintptr_t binding, const char *data, int data_length);
 	int evma_send_datagram (const uintptr_t binding, const char *data, int data_length, const char *address, int port);
@@ -102,6 +120,7 @@ extern "C" {
 	void evma_set_simultaneous_accept_count (int);
 	void evma_setuid_string (const char *username);
 	void evma_stop_machine();
+	bool evma_stopping();
 	float evma_get_heartbeat_interval();
 	int evma_set_heartbeat_interval(float);
 
@@ -112,6 +131,7 @@ extern "C" {
 
 	const uintptr_t evma_watch_pid (int);
 	void evma_unwatch_pid (const uintptr_t binding);
+	int evma_is_watch_only(const uintptr_t binding);
 
 	void evma_start_proxy(const uintptr_t from, const uintptr_t to, const unsigned long bufsize, const unsigned long length);
 	void evma_stop_proxy(const uintptr_t from);

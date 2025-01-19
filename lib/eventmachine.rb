@@ -38,6 +38,7 @@ require 'shellwords'
 require 'thread'
 require 'resolv'
 
+##
 # Top-level EventMachine namespace. If you are looking for EventMachine examples, see {file:docs/GettingStarted.md EventMachine tutorial}.
 #
 # ## Key methods ##
@@ -129,7 +130,7 @@ module EventMachine
   # Once event loop is running, it is perfectly possible to start multiple servers and clients simultaneously: content-aware
   # proxies like [Proxymachine](https://github.com/mojombo/proxymachine) do just that.
   #
-  # ## Using EventMachine with Ruby on Rails and other Web application frameworks ##
+  # ## Using EventMachine with Ruby on Rails and other Web application frameworks
   #
   # Standalone applications often run event loop on the main thread, thus blocking for their entire lifespan. In case of Web applications,
   # if you are running an EventMachine-based app server such as [Thin](http://code.macournoyer.com/thin/) or [Goliath](https://github.com/postrank-labs/goliath/),
@@ -141,16 +142,16 @@ module EventMachine
   # @example Starting EventMachine event loop in the current thread to run the "Hello, world"-like Echo server example
   #
   #   #!/usr/bin/env ruby
-  #
+  #   
   #   require 'rubygems' # or use Bundler.setup
   #   require 'eventmachine'
-  #
+  #   
   #   class EchoServer < EM::Connection
   #     def receive_data(data)
   #       send_data(data)
   #     end
   #   end
-  #
+  #   
   #   EventMachine.run do
   #     EventMachine.start_server("0.0.0.0", 10000, EchoServer)
   #   end
@@ -183,6 +184,7 @@ module EventMachine
       # Clean up reactor state so a new reactor boots up in this child.
       stop_event_loop
       release_machine
+      cleanup_machine
       @reactor_running = false
     end
 
@@ -198,14 +200,15 @@ module EventMachine
       @next_tick_queue ||= []
       @tails ||= []
       begin
-        @reactor_pid = Process.pid
-        @reactor_running = true
         initialize_event_machine
+        @reactor_pid = Process.pid
+        @reactor_thread = Thread.current
+        @reactor_running = true
+
         (b = blk || block) and add_timer(0, b)
         if @next_tick_queue && !@next_tick_queue.empty?
           add_timer(0) { signal_loopbreak }
         end
-        @reactor_thread = Thread.current
 
         # Rubinius needs to come back into "Ruby space" for GC to work,
         # so we'll crank the machine here.
@@ -220,30 +223,8 @@ module EventMachine
           @tails.pop.call
         end
 
-        begin
-          release_machine
-        ensure
-          if @threadpool
-            @threadpool.each { |t| t.exit }
-            @threadpool.each do |t|
-              next unless t.alive?
-              begin
-                # Thread#kill! does not exist on 1.9 or rbx, and raises
-                # NotImplemented on jruby
-                t.kill!
-              rescue NoMethodError, NotImplementedError
-                t.kill
-                # XXX t.join here?
-              end
-            end
-            @threadqueue = nil
-            @resultqueue = nil
-            @threadpool = nil
-            @all_threads_spawned = false
-          end
-
-          @next_tick_queue = []
-        end
+        release_machine
+        cleanup_machine
         @reactor_running = false
         @reactor_thread = nil
       end
@@ -288,13 +269,30 @@ module EventMachine
     # Original patch by Aman Gupta.
     #
     Kernel.fork do
-      if self.reactor_running?
-        self.stop_event_loop
-        self.release_machine
+      if reactor_running?
+        stop_event_loop
+        release_machine
+        cleanup_machine
         @reactor_running = false
+        @reactor_thread = nil
       end
-      self.run block
+      run block
     end
+  end
+
+  # Clean up Ruby space following a release_machine
+  def self.cleanup_machine
+    if @threadpool && !@threadpool.empty?
+      # Tell the threads to stop
+      @threadpool.each { |t| t.exit }
+      # Join the threads or bump the stragglers one more time
+      @threadpool.each { |t| t.join 0.01 || t.exit }
+    end
+    @threadpool = nil
+    @threadqueue = nil
+    @resultqueue = nil
+    @all_threads_spawned = false
+    @next_tick_queue = []
   end
 
   # Adds a block to call as the reactor is shutting down.
@@ -336,11 +334,11 @@ module EventMachine
   #
   # @example Setting a one-shot timer with EventMachine
   #
-  #  EventMachine.run {
-  #    puts "Starting the run now: #{Time.now}"
-  #    EventMachine.add_timer 5, proc { puts "Executing timer event: #{Time.now}" }
-  #    EventMachine.add_timer(10) { puts "Executing timer event: #{Time.now}" }
-  #  }
+  #   EventMachine.run {
+  #     puts "Starting the run now: #{Time.now}"
+  #     EventMachine.add_timer 5, proc { puts "Executing timer event: #{Time.now}" }
+  #     EventMachine.add_timer(10) { puts "Executing timer event: #{Time.now}" }
+  #   }
   #
   # @param [Integer] delay Delay in seconds
   # @see EventMachine::Timer
@@ -364,9 +362,9 @@ module EventMachine
   #
   # @example Write a dollar-sign to stderr every five seconds, without blocking
   #
-  #  EventMachine.run {
-  #    EventMachine.add_periodic_timer( 5 ) { $stderr.write "$" }
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.add_periodic_timer(5) { $stderr.write "$" }
+  #   }
   #
   # @param [Integer] delay Delay in seconds
   #
@@ -403,40 +401,40 @@ module EventMachine
   #
   # @example Stopping a running EventMachine event loop
   #
-  #  require 'rubygems'
-  #  require 'eventmachine'
+  #   require 'rubygems'
+  #   require 'eventmachine'
+  #   
+  #   module Redmond
+  #     def post_init
+  #       puts "We're sending a dumb HTTP request to the remote peer."
+  #       send_data "GET / HTTP/1.1\r\nHost: www.microsoft.com\r\n\r\n"
+  #     end
+  #   
+  #     def receive_data data
+  #       puts "We received #{data.length} bytes from the remote peer."
+  #       puts "We're going to stop the event loop now."
+  #       EventMachine::stop_event_loop
+  #     end
+  #   
+  #     def unbind
+  #       puts "A connection has terminated."
+  #     end
+  #   end
+  #   
+  #   puts "We're starting the event loop now."
+  #   EventMachine.run {
+  #     EventMachine.connect "www.microsoft.com", 80, Redmond
+  #   }
+  #   puts "The event loop has stopped."
   #
-  #  module Redmond
-  #    def post_init
-  #      puts "We're sending a dumb HTTP request to the remote peer."
-  #      send_data "GET / HTTP/1.1\r\nHost: www.microsoft.com\r\n\r\n"
-  #    end
-  #
-  #    def receive_data data
-  #      puts "We received #{data.length} bytes from the remote peer."
-  #      puts "We're going to stop the event loop now."
-  #      EventMachine::stop_event_loop
-  #    end
-  #
-  #    def unbind
-  #      puts "A connection has terminated."
-  #    end
-  #  end
-  #
-  #  puts "We're starting the event loop now."
-  #  EventMachine.run {
-  #    EventMachine.connect "www.microsoft.com", 80, Redmond
-  #  }
-  #  puts "The event loop has stopped."
-  #
-  #  # This program will produce approximately the following output:
-  #  #
-  #  # We're starting the event loop now.
-  #  # We're sending a dumb HTTP request to the remote peer.
-  #  # We received 1440 bytes from the remote peer.
-  #  # We're going to stop the event loop now.
-  #  # A connection has terminated.
-  #  # The event loop has stopped.
+  #   # This program will produce approximately the following output:
+  #   #
+  #   # We're starting the event loop now.
+  #   # We're sending a dumb HTTP request to the remote peer.
+  #   # We received 1440 bytes from the remote peer.
+  #   # We're going to stop the event loop now.
+  #   # A connection has terminated.
+  #   # The event loop has stopped.
   #
   #
   def self.stop_event_loop
@@ -493,43 +491,43 @@ module EventMachine
   #
   # @example
   #
-  #  require 'rubygems'
-  #  require 'eventmachine'
+  #   require 'rubygems'
+  #   require 'eventmachine'
   #
-  #  # Here is an example of a server that counts lines of input from the remote
-  #  # peer and sends back the total number of lines received, after each line.
-  #  # Try the example with more than one client connection opened via telnet,
-  #  # and you will see that the line count increments independently on each
-  #  # of the client connections. Also very important to note, is that the
-  #  # handler for the receive_data function, which our handler redefines, may
-  #  # not assume that the data it receives observes any kind of message boundaries.
-  #  # Also, to use this example, be sure to change the server and port parameters
-  #  # to the start_server call to values appropriate for your environment.
-  #  module LineCounter
-  #    MaxLinesPerConnection = 10
+  #   # Here is an example of a server that counts lines of input from the remote
+  #   # peer and sends back the total number of lines received, after each line.
+  #   # Try the example with more than one client connection opened via telnet,
+  #   # and you will see that the line count increments independently on each
+  #   # of the client connections. Also very important to note, is that the
+  #   # handler for the receive_data function, which our handler redefines, may
+  #   # not assume that the data it receives observes any kind of message boundaries.
+  #   # Also, to use this example, be sure to change the server and port parameters
+  #   # to the start_server call to values appropriate for your environment.
+  #   module LineCounter
+  #     MaxLinesPerConnection = 10
   #
-  #    def post_init
-  #      puts "Received a new connection"
-  #      @data_received = ""
-  #      @line_count = 0
-  #    end
+  #     def post_init
+  #       puts "Received a new connection"
+  #       @data_received = ""
+  #       @line_count = 0
+  #     end
   #
-  #    def receive_data data
-  #      @data_received << data
-  #      while @data_received.slice!( /^[^\n]*[\n]/m )
-  #        @line_count += 1
-  #        send_data "received #{@line_count} lines so far\r\n"
-  #        @line_count == MaxLinesPerConnection and close_connection_after_writing
-  #      end
-  #    end
-  #  end
+  #     def receive_data data
+  #       @data_received << data
+  #       while @data_received.slice!( /^[^\n]*[\n]/m )
+  #         @line_count += 1
+  #         send_data "received #{@line_count} lines so far\r\n"
+  #         @line_count == MaxLinesPerConnection and close_connection_after_writing
+  #       end
+  #     end
+  #   end
   #
-  #  EventMachine.run {
-  #    host, port = "192.168.0.100", 8090
-  #    EventMachine.start_server host, port, LineCounter
-  #    puts "Now accepting connections on address #{host}, port #{port}..."
-  #    EventMachine.add_periodic_timer(10) { $stderr.write "*" }
-  #  }
+  #   EventMachine.run {
+  #     host, port = "192.168.0.100", 8090
+  #     EventMachine.start_server host, port, LineCounter
+  #     puts "Now accepting connections on address #{host}, port #{port}..."
+  #     EventMachine.add_periodic_timer(10) { $stderr.write "*" }
+  #   }
   #
   # @param [String] server         Host to bind to.
   # @param [Integer] port          Port to bind to.
@@ -601,50 +599,50 @@ module EventMachine
   #
   # @example
   #
-  #  # Here's a program which connects to a web server, sends a naive
-  #  # request, parses the HTTP header of the response, and then
-  #  # (antisocially) ends the event loop, which automatically drops the connection
-  #  # (and incidentally calls the connection's unbind method).
-  #  module DumbHttpClient
-  #    def post_init
-  #      send_data "GET / HTTP/1.1\r\nHost: _\r\n\r\n"
-  #      @data = ""
-  #      @parsed = false
-  #    end
+  #   # Here's a program which connects to a web server, sends a naive
+  #   # request, parses the HTTP header of the response, and then
+  #   # (antisocially) ends the event loop, which automatically drops the connection
+  #   # (and incidentally calls the connection's unbind method).
+  #   module DumbHttpClient
+  #     def post_init
+  #       send_data "GET / HTTP/1.1\r\nHost: _\r\n\r\n"
+  #       @data = ""
+  #       @parsed = false
+  #     end
   #
-  #    def receive_data data
-  #      @data << data
-  #      if !@parsed and @data =~ /[\n][\r]*[\n]/m
-  #        @parsed = true
-  #        puts "RECEIVED HTTP HEADER:"
-  #        $`.each {|line| puts ">>> #{line}" }
+  #     def receive_data data
+  #       @data << data
+  #       if !@parsed and @data =~ /[\n][\r]*[\n]/m
+  #         @parsed = true
+  #         puts "RECEIVED HTTP HEADER:"
+  #         $`.each {|line| puts ">>> #{line}" }
   #
-  #        puts "Now we'll terminate the loop, which will also close the connection"
-  #        EventMachine::stop_event_loop
-  #      end
-  #    end
+  #         puts "Now we'll terminate the loop, which will also close the connection"
+  #         EventMachine::stop_event_loop
+  #       end
+  #     end
   #
-  #    def unbind
-  #      puts "A connection has terminated"
-  #    end
-  #  end
+  #     def unbind
+  #       puts "A connection has terminated"
+  #     end
+  #   end
   #
-  #  EventMachine.run {
-  #    EventMachine.connect "www.bayshorenetworks.com", 80, DumbHttpClient
-  #  }
-  #  puts "The event loop has ended"
+  #   EventMachine.run {
+  #     EventMachine.connect "www.bayshorenetworks.com", 80, DumbHttpClient
+  #   }
+  #   puts "The event loop has ended"
   #
   #
   # @example Defining protocol handler as a class
   #
-  #  class MyProtocolHandler < EventMachine::Connection
-  #    def initialize *args
-  #      super
-  #      # whatever else you want to do here
-  #    end
+  #   class MyProtocolHandler < EventMachine::Connection
+  #     def initialize *args
+  #       super
+  #       # whatever else you want to do here
+  #     end
   #
-  #    # ...
-  #  end
+  #     # ...
+  #   end
   #
   #
   # @param [String] server         Host to connect to
@@ -725,32 +723,32 @@ module EventMachine
   #
   # @example
   #
-  #  module SimpleHttpClient
-  #    def notify_readable
-  #      header = @io.readline
+  #   module SimpleHttpClient
+  #     def notify_readable
+  #       header = @io.readline
   #
-  #      if header == "\r\n"
-  #        # detach returns the file descriptor number (fd == @io.fileno)
-  #        fd = detach
-  #      end
-  #    rescue EOFError
-  #      detach
-  #    end
+  #       if header == "\r\n"
+  #         # detach returns the file descriptor number (fd == @io.fileno)
+  #         fd = detach
+  #       end
+  #     rescue EOFError
+  #       detach
+  #     end
   #
-  #    def unbind
-  #      EM.next_tick do
-  #        # socket is detached from the eventloop, but still open
-  #        data = @io.read
-  #      end
-  #    end
-  #  end
+  #     def unbind
+  #       EM.next_tick do
+  #         # socket is detached from the eventloop, but still open
+  #         data = @io.read
+  #       end
+  #     end
+  #   end
   #
-  #  EventMachine.run {
-  #    sock = TCPSocket.new('site.com', 80)
-  #    sock.write("GET / HTTP/1.0\r\n\r\n")
-  #    conn = EventMachine.watch(sock, SimpleHttpClient)
-  #    conn.notify_readable = true
-  #  }
+  #   EventMachine.run {
+  #     sock = TCPSocket.new('site.com', 80)
+  #     sock.write("GET / HTTP/1.0\r\n\r\n")
+  #     conn = EventMachine.watch(sock, SimpleHttpClient)
+  #     conn.notify_readable = true
+  #   }
   #
   # @author Riham Aldakkak (eSpace Technologies)
   def EventMachine::watch io, handler=nil, *args, &blk
@@ -956,25 +954,25 @@ module EventMachine
   #
   # @example
   #
-  #  EventMachine.run {
-  #    EventMachine.connect("rubyeventmachine.com", 80)
-  #    # count will be 0 in this case, because connection is not
-  #    # established yet
-  #    count = EventMachine.connection_count
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.connect("rubyeventmachine.com", 80)
+  #     # count will be 0 in this case, because connection is not
+  #     # established yet
+  #     count = EventMachine.connection_count
+  #   }
   #
   #
   # @example
   #
-  #  EventMachine.run {
-  #    EventMachine.connect("rubyeventmachine.com", 80)
+  #   EventMachine.run {
+  #     EventMachine.connect("rubyeventmachine.com", 80)
   #
-  #    EventMachine.next_tick {
-  #      # In this example, count will be 1 since the connection has been established in
-  #      # the next loop of the reactor.
-  #      count = EventMachine.connection_count
-  #    }
-  #  }
+  #     EventMachine.next_tick {
+  #       # In this example, count will be 1 since the connection has been established in
+  #       # the next loop of the reactor.
+  #       count = EventMachine.connection_count
+  #     }
+  #   }
   #
   # @return [Integer] Number of connections currently held by the reactor.
   def self.connection_count
@@ -1010,7 +1008,7 @@ module EventMachine
         # do some work during the next_tick. The only mechanism we have from the
         # ruby side is next_tick itself, although ideally, we'd just drop a byte
         # on the loopback descriptor.
-        EM.next_tick {} if exception_raised
+        next_tick {} if exception_raised
       end
     end
   end
@@ -1019,11 +1017,14 @@ module EventMachine
   # EventMachine.defer is used for integrating blocking operations into EventMachine's control flow.
   # The action of {.defer} is to take the block specified in the first parameter (the "operation")
   # and schedule it for asynchronous execution on an internal thread pool maintained by EventMachine.
-  # When the operation completes, it will pass the result computed by the block (if any)
-  # back to the EventMachine reactor. Then, EventMachine calls the block specified in the
-  # second parameter to {.defer} (the "callback"), as part of its normal event handling loop.
-  # The result computed by the operation block is passed as a parameter to the callback.
-  # You may omit the callback parameter if you don't need to execute any code after the operation completes.
+  # When the operation completes, it will pass the result computed by the block (if any) back to the
+  # EventMachine reactor. Then, EventMachine calls the block specified in the second parameter to
+  # {.defer} (the "callback"), as part of its normal event handling loop. The result computed by the
+  # operation block is passed as a parameter to the callback. You may omit the callback parameter if
+  # you don't need to execute any code after the operation completes. If the operation raises an
+  # unhandled exception, the exception will be passed to the third parameter to {.defer} (the
+  # "errback"), as part of its normal event handling loop. If no errback is provided, the exception
+  # will be allowed to blow through to the main thread immediately.
   #
   # ## Caveats ##
   #
@@ -1037,23 +1038,32 @@ module EventMachine
   # the number of threads in its pool, so if you do this enough times, your subsequent deferred
   # operations won't get a chance to run.
   #
+  # The threads within the EventMachine's thread pool have abort_on_exception set to true. As a result,
+  # if an unhandled exception is raised by the deferred operation and an errback is not provided, it
+  # will blow through to the main thread immediately. If the main thread is within an indiscriminate
+  # rescue block at that time, the exception could be handled improperly by the main thread.
+  #
   # @example
   #
-  #  operation = proc {
-  #    # perform a long-running operation here, such as a database query.
-  #    "result" # as usual, the last expression evaluated in the block will be the return value.
-  #  }
-  #  callback = proc {|result|
-  #    # do something with result here, such as send it back to a network client.
-  #  }
+  #   operation = proc {
+  #     # perform a long-running operation here, such as a database query.
+  #     "result" # as usual, the last expression evaluated in the block will be the return value.
+  #   }
+  #   callback = proc {|result|
+  #     # do something with result here, such as send it back to a network client.
+  #   }
+  #   errback = proc {|error|
+  #     # do something with error here, such as re-raising or logging.
+  #   }
   #
-  #  EventMachine.defer(operation, callback)
+  #   EventMachine.defer(operation, callback, errback)
   #
   # @param [#call] op       An operation you want to offload to EventMachine thread pool
   # @param [#call] callback A callback that will be run on the event loop thread after `operation` finishes.
+  # @param [#call] errback  An errback that will be run on the event loop thread after `operation` raises an exception.
   #
   # @see EventMachine.threadpool_size
-  def self.defer op = nil, callback = nil, &blk
+  def self.defer op = nil, callback = nil, errback = nil, &blk
     # OBSERVE that #next_tick hacks into this mechanism, so don't make any changes here
     # without syncing there.
     #
@@ -1070,7 +1080,7 @@ module EventMachine
       spawn_threadpool
     end
 
-    @threadqueue << [op||blk,callback]
+    @threadqueue << [op||blk,callback,errback]
   end
 
 
@@ -1081,16 +1091,19 @@ module EventMachine
         Thread.current.abort_on_exception = true
         while true
           begin
-            op, cback = *@threadqueue.pop
+            op, cback, eback = *@threadqueue.pop
           rescue ThreadError
             $stderr.puts $!.message
             break # Ruby 2.0 may fail at Queue.pop
           end
-          result = op.call
-          if cback
+          begin
+            result = op.call
             @resultqueue << [result, cback]
-            EventMachine.signal_loopbreak
+          rescue Exception => error
+            raise error unless eback
+            @resultqueue << [error, eback]
           end
+          signal_loopbreak
         end
       end
       @threadpool << thread
@@ -1184,22 +1197,22 @@ module EventMachine
   #
   # @example
   #
-  #  module RubyCounter
-  #    def post_init
-  #      # count up to 5
-  #      send_data "5\n"
-  #    end
-  #    def receive_data data
-  #      puts "ruby sent me: #{data}"
-  #    end
-  #    def unbind
-  #      puts "ruby died with exit status: #{get_status.exitstatus}"
-  #    end
-  #  end
+  #   module RubyCounter
+  #     def post_init
+  #       # count up to 5
+  #       send_data "5\n"
+  #     end
+  #     def receive_data data
+  #       puts "ruby sent me: #{data}"
+  #     end
+  #     def unbind
+  #       puts "ruby died with exit status: #{get_status.exitstatus}"
+  #     end
+  #   end
   #
-  #  EventMachine.run {
-  #    EventMachine.popen("ruby -e' $stdout.sync = true; gets.to_i.times{ |i| puts i+1; sleep 1 } '", RubyCounter)
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.popen("ruby -e' $stdout.sync = true; gets.to_i.times{ |i| puts i+1; sleep 1 } '", RubyCounter)
+  #   }
   #
   # @note This method is not supported on Microsoft Windows
   # @see EventMachine::DeferrableChildProcess
@@ -1278,37 +1291,37 @@ module EventMachine
   #
   # @example
   #
-  #  # Before running this example, make sure we have a file to monitor:
-  #  # $ echo "bar" > /tmp/foo
+  #   # Before running this example, make sure we have a file to monitor:
+  #   # $ echo "bar" > /tmp/foo
   #
-  #  module Handler
-  #    def file_modified
-  #      puts "#{path} modified"
-  #    end
+  #   module Handler
+  #     def file_modified
+  #       puts "#{path} modified"
+  #     end
   #
-  #    def file_moved
-  #      puts "#{path} moved"
-  #    end
+  #     def file_moved
+  #       puts "#{path} moved"
+  #     end
   #
-  #    def file_deleted
-  #      puts "#{path} deleted"
-  #    end
+  #     def file_deleted
+  #       puts "#{path} deleted"
+  #     end
   #
-  #    def unbind
-  #      puts "#{path} monitoring ceased"
-  #    end
-  #  end
+  #     def unbind
+  #       puts "#{path} monitoring ceased"
+  #     end
+  #   end
   #
-  #  # for efficient file watching, use kqueue on Mac OS X
-  #  EventMachine.kqueue = true if EventMachine.kqueue?
+  #   # for efficient file watching, use kqueue on Mac OS X
+  #   EventMachine.kqueue = true if EventMachine.kqueue?
   #
-  #  EventMachine.run {
-  #    EventMachine.watch_file("/tmp/foo", Handler)
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.watch_file("/tmp/foo", Handler)
+  #   }
   #
-  #  # $ echo "baz" >> /tmp/foo    =>    "/tmp/foo modified"
-  #  # $ mv /tmp/foo /tmp/oof      =>    "/tmp/foo moved"
-  #  # $ rm /tmp/oof               =>    "/tmp/foo deleted"
+  #   # $ echo "baz" >> /tmp/foo    =>    "/tmp/foo modified"
+  #   # $ mv /tmp/foo /tmp/oof      =>    "/tmp/foo moved"
+  #   # $ rm /tmp/oof               =>    "/tmp/foo deleted"
   #
   # @note The ability to pick up on the new filename after a rename is not yet supported.
   #       Calling #path will always return the filename you originally used.
@@ -1331,18 +1344,18 @@ module EventMachine
   #
   # @example
   #
-  #  module ProcessWatcher
-  #    def process_exited
-  #      put 'the forked child died!'
-  #    end
-  #  end
+  #   module ProcessWatcher
+  #     def process_exited
+  #       put 'the forked child died!'
+  #     end
+  #   end
   #
-  #  pid = fork{ sleep }
+  #   pid = fork{ sleep }
   #
-  #  EventMachine.run {
-  #    EventMachine.watch_process(pid, ProcessWatcher)
-  #    EventMachine.add_timer(1){ Process.kill('TERM', pid) }
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.watch_process(pid, ProcessWatcher)
+  #     EventMachine.add_timer(1){ Process.kill('TERM', pid) }
+  #   }
   #
   # @param [Integer]       pid     PID of the process to watch.
   # @param [Class, Module] handler A class or module that implements event handlers associated with the file.
@@ -1443,40 +1456,40 @@ module EventMachine
   #
   # @example
   #
-  #  module ProxyConnection
-  #    def initialize(client, request)
-  #      @client, @request = client, request
-  #    end
+  #   module ProxyConnection
+  #     def initialize(client, request)
+  #       @client, @request = client, request
+  #     end
   #
-  #    def post_init
-  #      EM::enable_proxy(self, @client)
-  #    end
+  #     def post_init
+  #       EM::enable_proxy(self, @client)
+  #     end
   #
-  #    def connection_completed
-  #      send_data @request
-  #    end
+  #     def connection_completed
+  #       send_data @request
+  #     end
   #
-  #    def proxy_target_unbound
-  #      close_connection
-  #    end
+  #     def proxy_target_unbound
+  #       close_connection
+  #     end
   #
-  #    def unbind
-  #      @client.close_connection_after_writing
-  #    end
-  #  end
+  #     def unbind
+  #       @client.close_connection_after_writing
+  #     end
+  #   end
   #
-  #  module ProxyServer
-  #    def receive_data(data)
-  #      (@buf ||= "") << data
-  #      if @buf =~ /\r\n\r\n/ # all http headers received
-  #        EventMachine.connect("10.0.0.15", 80, ProxyConnection, self, data)
-  #      end
-  #    end
-  #  end
+  #   module ProxyServer
+  #     def receive_data(data)
+  #       (@buf ||= "") << data
+  #       if @buf =~ /\r\n\r\n/ # all http headers received
+  #         EventMachine.connect("10.0.0.15", 80, ProxyConnection, self, data)
+  #       end
+  #     end
+  #   end
   #
-  #  EventMachine.run {
-  #    EventMachine.start_server("127.0.0.1", 8080, ProxyServer)
-  #  }
+  #   EventMachine.run {
+  #     EventMachine.start_server("127.0.0.1", 8080, ProxyServer)
+  #   }
   #
   # @param [EventMachine::Connection] from    Source of data to be proxies/streamed.
   # @param [EventMachine::Connection] to      Destination of data to be proxies/streamed.
@@ -1548,16 +1561,30 @@ module EventMachine
             rescue Errno::EBADF, IOError
             end
           end
-        rescue
-          @wrapped_exception = $!
-          stop
+        # As noted above, unbind absolutely must not raise an exception or the reactor will crash.
+        # If there is no EM.error_handler, or if the error_handler retrows, then stop the reactor,
+        # stash the exception in $wrapped_exception, and the exception will be raised after the
+        # reactor is cleaned up (see the last line of self.run).
+        rescue Exception => error
+          if instance_variable_defined? :@error_handler
+            begin
+              @error_handler.call error
+              # No need to stop unless error_handler rethrows
+            rescue Exception => error
+              @wrapped_exception = error
+              stop
+            end
+          else
+            @wrapped_exception = error
+            stop
+          end
         end
       elsif c = @acceptors.delete( conn_binding )
         # no-op
       else
         if $! # Bubble user generated errors.
           @wrapped_exception = $!
-          EM.stop
+          stop
         else
           raise ConnectionNotBound, "received ConnectionUnbound for an unknown signature: #{conn_binding}"
         end
@@ -1575,6 +1602,13 @@ module EventMachine
     elsif opcode == ConnectionCompleted
       c = @conns[conn_binding] or raise ConnectionNotBound, "received ConnectionCompleted for unknown signature: #{conn_binding}"
       c.connection_completed
+    elsif opcode == SslHandshakeCompleted
+      c = @conns[conn_binding] or raise ConnectionNotBound, "received SslHandshakeCompleted for unknown signature: #{conn_binding}"
+      c.ssl_handshake_completed
+    elsif opcode == SslVerify
+      c = @conns[conn_binding] or raise ConnectionNotBound, "received SslVerify for unknown signature: #{conn_binding}"
+      result = c.ssl_verify_peer(data) or c.close_connection
+      result
     elsif opcode == TimerFired
       t = @timers.delete( data )
       return if t == false # timer cancelled

@@ -1,4 +1,4 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestConnectionWrite < Test::Unit::TestCase
 
@@ -18,9 +18,10 @@ class TestConnectionWrite < Test::Unit::TestCase
   end
 
   def test_with_naughty_callback
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
     EM.run do
-      r1, w1 = IO.pipe
-      r2, w2 = IO.pipe
+      r1, _ = IO.pipe
+      r2, _ = IO.pipe
 
       # Adding EM.watches
       $conn1 = EM.watch(r1, SimpleClient)

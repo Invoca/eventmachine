@@ -1,8 +1,17 @@
-require 'em_test_helper'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestLineAndTextProtocol < Test::Unit::TestCase
 
-  class SimpleLineTest < EM::P::LineAndTextProtocol
+  class TLP_LineBuffer < EM::P::LineAndTextProtocol
+    attr_reader :line_buffer
+
+    def initialize
+      super
+      @line_buffer = []
+    end
+
     def receive_line line
       @line_buffer << line
     end
@@ -27,37 +36,47 @@ class TestLineAndTextProtocol < Test::Unit::TestCase
   end
 
   def test_simple_lines
-    lines_received = []
+    conn = nil
     EM.run {
-      EM.start_server( "127.0.0.1", @port, SimpleLineTest ) do |conn|
-        conn.instance_eval "@line_buffer = lines_received"
+      EM.start_server( "127.0.0.1", @port, TLP_LineBuffer ) do |c|
+        conn = c
       end
-      setup_timeout
+      setup_timeout 0.4
 
       EM.connect "127.0.0.1", @port, StopClient do |c|
         c.send_data "aaa\nbbb\r\nccc\n"
         c.close_connection_after_writing
       end
     }
-    assert_equal( %w(aaa bbb ccc), lines_received )
+    assert_equal( %w(aaa bbb ccc), conn.line_buffer)
   end
 
   #--------------------------------------------------------------------
 
-  class SimpleLineTest < EM::P::LineAndTextProtocol
+  class TLP_ErrorMessage < EM::P::LineAndTextProtocol
+    attr_reader :error_message
+
+    def initialize
+      super
+      @error_message = []
+    end
+
+    def receive_line text
+      raise
+    end
+
     def receive_error text
       @error_message << text
     end
   end
 
   def test_overlength_lines
-    lines_received = []
+    conn = nil
     EM.run {
-      EM.start_server( "127.0.0.1", @port, SimpleLineTest ) do |conn|
-        conn.instance_eval "@error_message = lines_received"
+      EM.start_server( "127.0.0.1", @port, TLP_ErrorMessage ) do |c|
+        conn = c
       end
-      setup_timeout
-
+      setup_timeout 0.4
       EM.connect "127.0.0.1", @port, StopClient do |c|
         c.send_data "a" * (16*1024 + 1)
         c.send_data "\n"
@@ -65,7 +84,7 @@ class TestLineAndTextProtocol < Test::Unit::TestCase
       end
 
     }
-    assert_equal( ["overlength line"], lines_received )
+    assert_equal( ["overlength line"], conn.error_message )
   end
 
 
@@ -86,10 +105,10 @@ class TestLineAndTextProtocol < Test::Unit::TestCase
   end
 
   def test_lines_and_text
-    output = ''
+    output = ''.dup
     EM.run {
       EM.start_server( "127.0.0.1", @port, LineAndTextTest )
-      setup_timeout
+      setup_timeout 0.4
 
       EM.connect "127.0.0.1", @port, StopClient do |c|
         c.set_receive_data { |data| output << data }
@@ -120,10 +139,10 @@ class TestLineAndTextProtocol < Test::Unit::TestCase
   end
 
   def test_binary_text
-    output = ''
+    output = ''.dup
     EM.run {
       EM.start_server( "127.0.0.1", @port, BinaryTextTest )
-      setup_timeout
+      setup_timeout 0.4
 
       EM.connect "127.0.0.1", @port, StopClient do |c|
         c.set_receive_data { |data| output << data }

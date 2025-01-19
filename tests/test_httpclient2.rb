@@ -1,17 +1,16 @@
-require 'em_test_helper'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestHttpClient2 < Test::Unit::TestCase
-  Localhost = "127.0.0.1"
-  Localport = 9801
+  class TestServer < EM::Connection
+  end
+
+  TIMEOUT = TIMEOUT_INTERVAL * 5.0
 
   def setup
-  end
-
-  def teardown
-  end
-
-
-  class TestServer < EM::Connection
+    @host = '127.0.0.1'
+    @port = next_port
   end
 
   # #connect returns an object which has made a connection to an HTTP server
@@ -21,21 +20,22 @@ class TestHttpClient2 < Test::Unit::TestCase
   #
   def test_connect
     EM.run {
-      EM.start_server Localhost, Localport, TestServer
+      setup_timeout
+      EM.start_server @host, @port, TestServer
       silent do
-        EM::P::HttpClient2.connect Localhost, Localport
-        EM::P::HttpClient2.connect( :host=>Localhost, :port=>Localport )
+        EM::P::HttpClient2.connect @host, @port
+        EM::P::HttpClient2.connect( :host=>@host, :port=>@port )
       end
       EM.stop
     }
   end
 
-
   def test_bad_port
     EM.run {
-      EM.start_server Localhost, Localport, TestServer
+      setup_timeout
+      EM.start_server @host, @port, TestServer
       assert_raises( ArgumentError ) {
-        silent { EM::P::HttpClient2.connect Localhost, "xxx" }
+        silent { EM::P::HttpClient2.connect @host, "xxx" }
       }
       EM.stop
     }
@@ -44,7 +44,9 @@ class TestHttpClient2 < Test::Unit::TestCase
   def test_bad_server
     err = nil
     EM.run {
-      http = silent { EM::P::HttpClient2.connect Localhost, 9999 }
+
+      setup_timeout(windows? ? 4 : TIMEOUT)
+      http = silent { EM::P::HttpClient2.connect @host, 9999 }
       d = http.get "/"
       d.errback { err = true; d.internal_error; EM.stop }
     }
@@ -54,7 +56,8 @@ class TestHttpClient2 < Test::Unit::TestCase
   def test_get
     content = nil
     EM.run {
-      http = silent { EM::P::HttpClient2.connect "google.com", 80 }
+      setup_timeout(TIMEOUT)
+      http = silent { EM::P::HttpClient2.connect :host => "www.google.com", :port => 80 }
       d = http.get "/"
       d.callback {
         content = d.content
@@ -70,7 +73,8 @@ class TestHttpClient2 < Test::Unit::TestCase
   def _test_get_multiple
     content = nil
     EM.run {
-      http = silent { EM::P::HttpClient2.connect "google.com", 80 }
+      setup_timeout
+      http = silent { EM::P::HttpClient2.connect "www.google.com" }
       d = http.get "/"
       d.callback {
         e = http.get "/"
@@ -86,27 +90,22 @@ class TestHttpClient2 < Test::Unit::TestCase
   def test_get_pipeline
     headers, headers2 = nil, nil
     EM.run {
-      http = silent { EM::P::HttpClient2.connect "google.com", 80 }
-      d = http.get("/")
-      d.callback {
-        headers = d.headers
-      }
-      e = http.get("/")
-      e.callback {
-        headers2 = e.headers
-      }
+      # intermittent CI failures, external server w/two requests?
+      setup_timeout TIMEOUT * 2.5
+      http = silent { EM::P::HttpClient2.connect "www.google.com", 80 }
+      http.get("/").callback { |resp| headers  = resp.headers }.errback { EM.stop }
+      http.get("/").callback { |resp| headers2 = resp.headers }.errback { EM.stop }
       EM.tick_loop { EM.stop if headers && headers2 }
-      EM.add_timer(1) { EM.stop }
     }
     assert(headers)
     assert(headers2)
   end
 
-
   def test_authheader
     EM.run {
-      EM.start_server Localhost, Localport, TestServer
-      http = silent { EM::P::HttpClient2.connect Localhost, 18842 }
+      setup_timeout(windows? ? 4 : TIMEOUT)
+      EM.start_server @host, @port, TestServer
+      http = silent { EM::P::HttpClient2.connect @host, 18842 }
       d = http.get :url=>"/", :authorization=>"Basic xxx"
       d.callback {EM.stop}
       d.errback {EM.stop}
@@ -114,15 +113,16 @@ class TestHttpClient2 < Test::Unit::TestCase
   end
 
   def test_https_get
+    omit("No SSL") unless EM.ssl?
     d = nil
     EM.run {
-      http = silent { EM::P::HttpClient2.connect :host => 'www.apple.com', :port => 443, :ssl => true }
+      setup_timeout(TIMEOUT)
+      http = silent { EM::P::HttpClient2.connect :host => 'www.google.com', :port => 443, :tls => true }
       d = http.get "/"
-      d.callback {
-        EM.stop
-      }
+      d.callback {EM.stop}
+      d.errback {EM.stop}
     }
     assert_equal(200, d.status)
-  end if EM.ssl?
+  end
 
 end

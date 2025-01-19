@@ -1,5 +1,6 @@
-require 'em_test_helper'
-require 'socket'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestAttach < Test::Unit::TestCase
   class EchoServer < EM::Connection
@@ -32,7 +33,7 @@ class TestAttach < Test::Unit::TestCase
   def setup
     @port = next_port
     $read, $r, $w, $fd = nil
-    $received_data = ""
+    $received_data = "".dup
   end
 
   def teardown
@@ -43,6 +44,7 @@ class TestAttach < Test::Unit::TestCase
   end
 
   def test_attach
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
     socket = nil
 
     EM.run {
@@ -67,6 +69,7 @@ class TestAttach < Test::Unit::TestCase
   end
 
   def test_attach_server
+    pend('FIXME: EM.attach_sd is broken in pure ruby mode') if pure_ruby_mode?
     omit_if(jruby?)
     $before = TCPServer.new("127.0.0.1", @port)
     sig     = nil
@@ -89,6 +92,7 @@ class TestAttach < Test::Unit::TestCase
   end
 
   def test_attach_pipe
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
     EM.run{
       $r, $w = IO.pipe
       EM.watch $r, PipeWatch do |c|
@@ -101,6 +105,7 @@ class TestAttach < Test::Unit::TestCase
   end
 
   def test_set_readable
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
     before, after = nil
 
     EM.run{
@@ -124,6 +129,7 @@ class TestAttach < Test::Unit::TestCase
   end
 
   def test_read_write_pipe
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
     result = nil
 
     pipe_reader = Module.new do
@@ -147,5 +153,56 @@ class TestAttach < Test::Unit::TestCase
     assert_equal "ghi", result
   ensure
     [r,w].each {|io| io.close rescue nil }
+  end
+
+  # This test shows that watch_only? is true for EM.watch
+  def test_watch_only
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
+    r, w = IO.pipe
+    $watch_only = nil
+
+    EM.run do
+      EM.watch r do |c|
+        assert_true(c.watch_only?)
+        c.notify_readable = true
+        def c.receive_data data
+          fail('this method should not be called')
+        end
+        def c.notify_readable
+          $watch_only = watch_only?
+        end
+      end
+      w.write 'hello'
+      EM.next_tick { EM.stop }
+    end
+
+    assert_true($watch_only)
+  end
+
+  # This test shows that watch_only? is false for EM.attach
+  def test_attach_data
+    pend('FIXME: EM.attach_fd is broken in pure ruby mode') if pure_ruby_mode?
+    pend("\nFIXME: Freezes Windows testing as of 2018-07-31") if windows?
+    r, w = IO.pipe
+    $watch_only = nil
+    $read = []
+
+    EM.run do
+      EM.attach r do |c|
+        assert_false(c.watch_only?)
+        def c.receive_data data
+          $watch_only = watch_only?
+          $read << data
+        end
+        def c.notify_readable
+          fail('this method should not be called')
+        end
+      end
+      w.write 'world'
+      EM.next_tick { EM.stop }
+    end
+
+    assert_false($watch_only)
+    assert_equal('world', $read.first)
   end
 end
