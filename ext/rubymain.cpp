@@ -21,18 +21,34 @@ See the file COPYING for complete licensing information.
 #include "eventmachine.h"
 #include <ruby.h>
 
-#ifndef RFLOAT_VALUE
-#define RFLOAT_VALUE(arg) RFLOAT(arg)->value
-#endif
-
 /* Adapted from NUM2BSIG / BSIG2NUM in ext/fiddle/conversions.h,
  * we'll call it a BSIG for Binding Signature here. */
 #if SIZEOF_VOIDP == SIZEOF_LONG
 # define BSIG2NUM(x)   (ULONG2NUM((unsigned long)(x)))
 # define NUM2BSIG(x)   (NUM2ULONG(x))
+# ifdef OS_WIN32
+#  define PRIFBSIG      "I32u"
+# else
+#  define PRIFBSIG      "lu"
+# endif
 #else
 # define BSIG2NUM(x)   (ULL2NUM((unsigned long long)(x)))
 # define NUM2BSIG(x)   (NUM2ULL(x))
+# ifdef OS_WIN32
+#  define PRIFBSIG      "I64u"
+# else
+#  define PRIFBSIG      "llu"
+# endif
+#endif
+
+/* Adapted from SWIG's changes for Ruby 2.7 compatibility.
+ * Before Ruby 2.7, rb_rescue takes (VALUE (*))(ANYARGS)
+ * whereas in Ruby 2.7, rb_rescue takes (VALUE (*))(VALUE)
+ * */
+#if defined(__cplusplus) && !defined(RB_METHOD_DEFINITION_DECL)
+#  define VALUEFUNC(f) ((VALUE (*)(ANYARGS)) f)
+#else
+#  define VALUEFUNC(f) (f)
 #endif
 
 /*******
@@ -48,6 +64,8 @@ static VALUE EM_eConnectionError;
 static VALUE EM_eUnknownTimerFired;
 static VALUE EM_eConnectionNotBound;
 static VALUE EM_eUnsupported;
+static VALUE EM_eInvalidSignature;
+static VALUE EM_eInvalidPrivateKey;
 
 static VALUE Intern_at_signature;
 static VALUE Intern_at_timers;
@@ -57,6 +75,7 @@ static VALUE Intern_event_callback;
 static VALUE Intern_run_deferred_callbacks;
 static VALUE Intern_delete;
 static VALUE Intern_call;
+static VALUE Intern_at;
 static VALUE Intern_receive_data;
 static VALUE Intern_ssl_handshake_completed;
 static VALUE Intern_ssl_verify_peer;
@@ -66,11 +85,16 @@ static VALUE Intern_proxy_target_unbound;
 static VALUE Intern_proxy_completed;
 static VALUE Intern_connection_completed;
 
-static VALUE EM_at_tick_timing;
-static long EM_tick_timing_max_samples;
-static double EM_tick_timing_sample_probability;
+static VALUE rb_cProcessStatus;
 
-static VALUE rb_cProcStatus;
+#ifdef IS_RUBY_3_OR_LATER
+/* Structure definition from MRI Ruby 3.0 process.c */
+struct rb_process_status {
+    rb_pid_t pid;
+    int status;
+    int error;
+};
+#endif
 
 struct em_event {
 	uintptr_t signature;
@@ -83,7 +107,7 @@ static inline VALUE ensure_conn(const uintptr_t signature)
 {
 	VALUE conn = rb_hash_aref (EmConnsHash, BSIG2NUM (signature));
 	if (conn == Qnil)
-		rb_raise (EM_eConnectionNotBound, "unknown connection: %lu", signature);
+		rb_raise (EM_eConnectionNotBound, "unknown connection: %" PRIFBSIG, signature);
 	return conn;
 }
 
@@ -92,8 +116,9 @@ static inline VALUE ensure_conn(const uintptr_t signature)
 t_event_callback
 ****************/
 
-static inline VALUE event_callback (struct em_event* e)
+static inline VALUE event_callback (VALUE e_value)
 {
+	struct em_event *e = (struct em_event *)e_value;
 	const uintptr_t signature = e->signature;
 	int event = e->event;
 	const char *data_str = e->data_str;
@@ -104,42 +129,42 @@ static inline VALUE event_callback (struct em_event* e)
 		{
 			VALUE conn = rb_hash_aref (EmConnsHash, BSIG2NUM (signature));
 			if (conn == Qnil)
-				rb_raise (EM_eConnectionNotBound, "received %lu bytes of data for unknown signature: %lu", data_num, signature);
+				rb_raise (EM_eConnectionNotBound, "received %lu bytes of data for unknown signature: %" PRIFBSIG, data_num, signature);
 			rb_funcall (conn, Intern_receive_data, 1, rb_str_new (data_str, data_num));
-			return ID2SYM(Intern_receive_data);
+			return Qnil;
 		}
 		case EM_CONNECTION_ACCEPTED:
 		{
 			rb_funcall (EmModule, Intern_event_callback, 3, BSIG2NUM(signature), INT2FIX(event), ULONG2NUM(data_num));
-			return ID2SYM(Intern_event_callback);
+			return Qnil;
 		}
 		case EM_CONNECTION_UNBOUND:
 		{
 			rb_funcall (EmModule, Intern_event_callback, 3, BSIG2NUM(signature), INT2FIX(event), ULONG2NUM(data_num));
-			return ID2SYM(Intern_event_callback);
+			return Qnil;
 		}
 		case EM_CONNECTION_COMPLETED:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_connection_completed, 0);
-			return ID2SYM(Intern_connection_completed);
+			return Qnil;
 		}
 		case EM_CONNECTION_NOTIFY_READABLE:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_notify_readable, 0);
-			return ID2SYM(Intern_notify_readable);
+			return Qnil;
 		}
 		case EM_CONNECTION_NOTIFY_WRITABLE:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_notify_writable, 0);
-			return ID2SYM(Intern_notify_writable);
+			return Qnil;
 		}
 		case EM_LOOPBREAK_SIGNAL:
 		{
 			rb_funcall (EmModule, Intern_run_deferred_callbacks, 0);
-			return ID2SYM(Intern_run_deferred_callbacks);
+			return Qnil;
 		}
 		case EM_TIMER_FIRED:
 		{
@@ -159,7 +184,7 @@ static inline VALUE event_callback (struct em_event* e)
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_ssl_handshake_completed, 0);
-			return ID2SYM(Intern_ssl_handshake_completed);
+			return Qnil;
 		}
 		case EM_SSL_VERIFY:
 		{
@@ -167,22 +192,23 @@ static inline VALUE event_callback (struct em_event* e)
 			VALUE should_accept = rb_funcall (conn, Intern_ssl_verify_peer, 1, rb_str_new(data_str, data_num));
 			if (RTEST(should_accept))
 				evma_accept_ssl_peer (signature);
-			return ID2SYM(Intern_ssl_verify_peer);
+			return Qnil;
 		}
 		#endif
 		case EM_PROXY_TARGET_UNBOUND:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_proxy_target_unbound, 0);
-			return ID2SYM(Intern_proxy_target_unbound);
+			return Qnil;
 		}
 		case EM_PROXY_COMPLETED:
 		{
 			VALUE conn = ensure_conn(signature);
 			rb_funcall (conn, Intern_proxy_completed, 0);
-			return ID2SYM(Intern_proxy_completed);
+			return Qnil;
 		}
 	}
+
 	return Qnil;
 }
 
@@ -190,10 +216,11 @@ static inline VALUE event_callback (struct em_event* e)
 event_error_handler
 *******************/
 
-static void event_error_handler(VALUE self UNUSED, VALUE err)
+static VALUE event_error_handler(VALUE self UNUSED, VALUE err)
 {
 	VALUE error_handler = rb_ivar_get(EmModule, Intern_at_error_handler);
 	rb_funcall (error_handler, Intern_call, 1, err);
+	return Qnil;
 }
 
 static void set_tick_timing(VALUE self UNUSED, VALUE at_tick_timing, VALUE tick_timing_sample_probability, VALUE tick_timing_max_samples)
@@ -241,13 +268,9 @@ static void event_callback_wrapper (const uintptr_t signature, int tick_type, co
     VALUE callback_sym = Qnil;
 
 	if (!rb_ivar_defined(EmModule, Intern_at_error_handler))
-		callback_sym = event_callback(&e);
+		event_callback((VALUE)&e);
 	else
-		callback_sym = rb_rescue((VALUE (*)(ANYARGS))event_callback, (VALUE)&e, (VALUE (*)(ANYARGS))event_error_handler, Qnil);
-
-    uint64_t after_tick_count = evma_get_real_time();
-
-    event_tick_timing (tick_type, callback_sym, before_tick_count, after_tick_count);
+		rb_rescue(VALUEFUNC(event_callback), (VALUE)&e, VALUEFUNC(event_error_handler), Qnil);
 }
 
 /**************************
@@ -285,6 +308,14 @@ static VALUE t_run_machine (VALUE self UNUSED)
 	return Qnil;
 }
 
+/*****************************
+t_get_timer_count
+*****************************/
+
+static VALUE t_get_timer_count ()
+{
+	return SIZET2NUM (evma_get_timer_count ());
+}
 
 /*******************
 t_add_oneshot_timer
@@ -292,7 +323,7 @@ t_add_oneshot_timer
 
 static VALUE t_add_oneshot_timer (VALUE self UNUSED, VALUE interval)
 {
-	const uintptr_t f = evma_install_oneshot_timer (FIX2INT (interval));
+	const uintptr_t f = evma_install_oneshot_timer (FIX2LONG (interval));
 	if (!f)
 		rb_raise (rb_eRuntimeError, "%s", "ran out of timers; use #set_max_timers to increase limit");
 	return BSIG2NUM (f);
@@ -364,7 +395,11 @@ t_start_tls
 
 static VALUE t_start_tls (VALUE self UNUSED, VALUE signature)
 {
-	evma_start_tls (NUM2BSIG (signature));
+	try {
+		evma_start_tls (NUM2BSIG (signature));
+	} catch (const std::runtime_error& e) {
+		rb_raise (EM_eInvalidPrivateKey, e.what(), signature);
+	}
 	return Qnil;
 }
 
@@ -372,14 +407,14 @@ static VALUE t_start_tls (VALUE self UNUSED, VALUE signature)
 t_set_tls_parms
 ***************/
 
-static VALUE t_set_tls_parms (VALUE self UNUSED, VALUE signature, VALUE privkeyfile, VALUE certchainfile, VALUE verify_peer)
+static VALUE t_set_tls_parms (VALUE self UNUSED, VALUE signature, VALUE privkeyfile, VALUE privkey, VALUE privkeypass, VALUE certchainfile, VALUE cert, VALUE verify_peer, VALUE fail_if_no_peer_cert, VALUE snihostname, VALUE cipherlist, VALUE ecdh_curve, VALUE dhparam, VALUE ssl_version)
 {
 	/* set_tls_parms takes a series of positional arguments for specifying such things
 	 * as private keys and certificate chains.
 	 * It's expected that the parameter list will grow as we add more supported features.
 	 * ALL of these parameters are optional, and can be specified as empty or NULL strings.
 	 */
-	evma_set_tls_parms (NUM2BSIG (signature), StringValueCStr (privkeyfile), StringValueCStr (certchainfile), (verify_peer == Qtrue ? 1 : 0));
+	evma_set_tls_parms (NUM2BSIG (signature), StringValueCStr (privkeyfile), StringValueCStr (privkey), StringValueCStr (privkeypass), StringValueCStr (certchainfile), StringValueCStr (cert), (verify_peer == Qtrue ? 1 : 0), (fail_if_no_peer_cert == Qtrue ? 1 : 0), StringValueCStr (snihostname), StringValueCStr (cipherlist), StringValueCStr (ecdh_curve), StringValueCStr (dhparam), NUM2INT (ssl_version));
 	return Qnil;
 }
 
@@ -416,6 +451,85 @@ static VALUE t_get_peer_cert (VALUE self UNUSED, VALUE signature UNUSED)
 }
 #endif
 
+/***************
+t_get_cipher_bits
+***************/
+
+#ifdef WITH_SSL
+static VALUE t_get_cipher_bits (VALUE self UNUSED, VALUE signature)
+{
+	int bits = evma_get_cipher_bits (NUM2BSIG (signature));
+	if (bits == -1)
+		return Qnil;
+	return INT2NUM (bits);
+}
+#else
+static VALUE t_get_cipher_bits (VALUE self UNUSED, VALUE signature UNUSED)
+{
+	return Qnil;
+}
+#endif
+
+/***************
+t_get_cipher_name
+***************/
+
+#ifdef WITH_SSL
+static VALUE t_get_cipher_name (VALUE self UNUSED, VALUE signature)
+{
+	const char *protocol = evma_get_cipher_name (NUM2BSIG (signature));
+	if (protocol)
+		return rb_str_new2 (protocol);
+
+	return Qnil;
+}
+#else
+static VALUE t_get_cipher_name (VALUE self UNUSED, VALUE signature UNUSED)
+{
+	return Qnil;
+}
+#endif
+
+/***************
+t_get_cipher_protocol
+***************/
+
+#ifdef WITH_SSL
+static VALUE t_get_cipher_protocol (VALUE self UNUSED, VALUE signature)
+{
+	const char *cipher = evma_get_cipher_protocol (NUM2BSIG (signature));
+	if (cipher)
+		return rb_str_new2 (cipher);
+
+	return Qnil;
+}
+#else
+static VALUE t_get_cipher_protocol (VALUE self UNUSED, VALUE signature UNUSED)
+{
+	return Qnil;
+}
+#endif
+
+/***************
+t_get_sni_hostname
+***************/
+
+#ifdef WITH_SSL
+static VALUE t_get_sni_hostname (VALUE self UNUSED, VALUE signature)
+{
+	const char *sni_hostname = evma_get_sni_hostname (NUM2BSIG (signature));
+	if (sni_hostname)
+		return rb_str_new2 (sni_hostname);
+
+	return Qnil;
+}
+#else
+static VALUE t_get_sni_hostname (VALUE self UNUSED, VALUE signature UNUSED)
+{
+	return Qnil;
+}
+#endif
+
 /**************
 t_get_peername
 **************/
@@ -424,8 +538,12 @@ static VALUE t_get_peername (VALUE self UNUSED, VALUE signature)
 {
 	char buf[1024];
 	socklen_t len = sizeof buf;
-	if (evma_get_peername (NUM2BSIG (signature), (struct sockaddr*)buf, &len)) {
-		return rb_str_new (buf, len);
+	try {
+		if (evma_get_peername (NUM2BSIG (signature), (struct sockaddr*)buf, &len)) {
+			return rb_str_new (buf, len);
+		}
+	} catch (std::runtime_error e) {
+		rb_raise (rb_eRuntimeError, "%s", e.what());
 	}
 
 	return Qnil;
@@ -439,8 +557,12 @@ static VALUE t_get_sockname (VALUE self UNUSED, VALUE signature)
 {
 	char buf[1024];
 	socklen_t len = sizeof buf;
-	if (evma_get_sockname (NUM2BSIG (signature), (struct sockaddr*)buf, &len)) {
-		return rb_str_new (buf, len);
+	try {
+		if (evma_get_sockname (NUM2BSIG (signature), (struct sockaddr*)buf, &len)) {
+			return rb_str_new (buf, len);
+		}
+	} catch (std::runtime_error e) {
+		rb_raise (rb_eRuntimeError, "%s", e.what());
 	}
 
 	return Qnil;
@@ -473,26 +595,50 @@ static VALUE t_get_subprocess_status (VALUE self UNUSED, VALUE signature)
 
 	if (evma_get_subprocess_status (NUM2BSIG (signature), &status)) {
 		if (evma_get_subprocess_pid (NUM2BSIG (signature), &pid)) {
-			proc_status = rb_obj_alloc(rb_cProcStatus);
 
+#if defined(IS_RUBY_3_3_OR_LATER)
+			proc_status = rb_obj_alloc(rb_cProcessStatus);
+			struct rb_process_status *data = NULL;
+			data = (rb_process_status*)RTYPEDDATA_GET_DATA(proc_status);
+			data->pid = pid;
+			data->status = status;
+#elif defined(IS_RUBY_3_OR_LATER)
+			struct rb_process_status *data = NULL;
+
+			/* Defined to match static definition from MRI Ruby 3.0 process.c
+			 *
+			 * Older C++ compilers before GCC 8 don't allow static initialization of a
+			 * struct without every field specified, so the definition here is at runtime
+			 */
+			static rb_data_type_t rb_process_status_type;
+			rb_process_status_type.wrap_struct_name = "Process::Status";
+			rb_process_status_type.function.dfree = RUBY_DEFAULT_FREE;
+			rb_process_status_type.flags = RUBY_TYPED_FREE_IMMEDIATELY;
+
+			proc_status = TypedData_Make_Struct(rb_cProcessStatus, struct rb_process_status, &rb_process_status_type, data);
+			data->pid = pid;
+			data->status = status;
+#else
+			proc_status = rb_obj_alloc(rb_cProcessStatus);
 			/* MRI Ruby uses hidden instance vars */
-			rb_iv_set(proc_status, "status", INT2FIX(status));
-			rb_iv_set(proc_status, "pid", INT2FIX(pid));
+			rb_ivar_set(proc_status, rb_intern_const("status"), INT2FIX(status));
+			rb_ivar_set(proc_status, rb_intern_const("pid"), INT2FIX(pid));
+#endif
 
 #ifdef RUBINIUS
 			/* Rubinius uses standard instance vars */
 			rb_iv_set(proc_status, "@pid", INT2FIX(pid));
 			if (WIFEXITED(status)) {
 				rb_iv_set(proc_status, "@status", INT2FIX(WEXITSTATUS(status)));
-			} else if(WIFSIGNALED(status)) {
+			} else if (WIFSIGNALED(status)) {
 				rb_iv_set(proc_status, "@termsig", INT2FIX(WTERMSIG(status)));
-			} else if(WIFSTOPPED(status)){
+			} else if (WIFSTOPPED(status)) {
 				rb_iv_set(proc_status, "@stopsig", INT2FIX(WSTOPSIG(status)));
 			}
 #endif
 		}
 	}
-
+	rb_obj_freeze(proc_status);
 	return proc_status;
 }
 
@@ -556,6 +702,8 @@ t_send_datagram
 static VALUE t_send_datagram (VALUE self UNUSED, VALUE signature, VALUE data, VALUE data_length, VALUE address, VALUE port)
 {
 	int b = evma_send_datagram (NUM2BSIG (signature), StringValuePtr (data), FIX2INT (data_length), StringValueCStr(address), FIX2INT(port));
+	if (b < 0)
+		rb_raise (EM_eConnectionError, "%s", "error in sending datagram"); // FIXME: this could be more specific.
 	return INT2NUM (b);
 }
 
@@ -912,12 +1060,11 @@ t_invoke_popen
 
 static VALUE t_invoke_popen (VALUE self UNUSED, VALUE cmd)
 {
-	// 1.8.7+
-	#ifdef RARRAY_LEN
-		int len = RARRAY_LEN(cmd);
-	#else
-		int len = RARRAY (cmd)->len;
+	#ifdef OS_WIN32
+	rb_raise (EM_eUnsupported, "popen is not available on this platform");
 	#endif
+
+	int len = RARRAY_LEN(cmd);
 	if (len >= 2048)
 		rb_raise (rb_eRuntimeError, "%s", "too many arguments to popen");
 	char *strings [2048];
@@ -932,7 +1079,7 @@ static VALUE t_invoke_popen (VALUE self UNUSED, VALUE cmd)
 	try {
 		f = evma_popen (strings);
 	} catch (std::runtime_error e) {
-		f = 0; // raise exception below
+		rb_raise (rb_eRuntimeError, "%s", e.what());
 	}
 	if (!f) {
 		char *err = strerror (errno);
@@ -979,7 +1126,12 @@ t_unwatch_filename
 
 static VALUE t_unwatch_filename (VALUE self UNUSED, VALUE sig)
 {
-	evma_unwatch_filename(NUM2BSIG (sig));
+	try {
+		evma_unwatch_filename(NUM2BSIG (sig));
+	} catch (std::runtime_error e) {
+		rb_raise (EM_eInvalidSignature, "%s", e.what());
+	}
+
 	return Qnil;
 }
 
@@ -1007,6 +1159,16 @@ static VALUE t_unwatch_pid (VALUE self UNUSED, VALUE sig)
 {
 	evma_unwatch_pid(NUM2BSIG (sig));
 	return Qnil;
+}
+
+
+/*************
+t_watch_only_p
+*************/
+
+static VALUE t_watch_only_p (VALUE self UNUSED, VALUE signature)
+{
+	return evma_is_watch_only(NUM2BSIG (signature)) ? Qtrue : Qfalse;
 }
 
 
@@ -1103,6 +1265,19 @@ static VALUE t__ssl_p (VALUE self UNUSED)
 	#endif
 }
 
+/********
+t_stopping
+********/
+
+static VALUE t_stopping ()
+{
+	if (evma_stopping()) {
+		return Qtrue;
+	} else {
+		return Qfalse;
+	}
+}
+
 
 /****************
 t_send_file_data
@@ -1141,8 +1316,8 @@ t_set_rlimit_nofile
 
 static VALUE t_set_rlimit_nofile (VALUE self UNUSED, VALUE arg)
 {
-	arg = (NIL_P(arg)) ? -1 : NUM2INT (arg);
-	return INT2NUM (evma_set_rlimit_nofile (arg));
+	int arg_int = (NIL_P(arg)) ? -1 : NUM2INT (arg);
+	return INT2NUM (evma_set_rlimit_nofile (arg_int));
 }
 
 /***************************
@@ -1167,26 +1342,59 @@ static VALUE conn_associate_callback_target (VALUE self UNUSED, VALUE sig UNUSED
 }
 
 
+/******************
+t_enable_keepalive
+******************/
+
+static VALUE t_enable_keepalive (int argc, VALUE *argv, VALUE self)
+{
+	VALUE idle, intvl, cnt;
+	rb_scan_args(argc, argv, "03", &idle, &intvl, &cnt);
+
+	// In ed.cpp, skip 0 values before calling setsockopt
+	int i_idle  = NIL_P(idle)  ? 0 : NUM2INT(idle);
+	int i_intvl = NIL_P(intvl) ? 0 : NUM2INT(intvl);
+	int i_cnt   = NIL_P(cnt)   ? 0 : NUM2INT(cnt);
+
+	VALUE sig = rb_ivar_get (self, Intern_at_signature);
+	try {
+		return INT2NUM (evma_enable_keepalive(NUM2ULONG(sig), i_idle, i_intvl, i_cnt));
+	} catch (std::runtime_error e) {
+		rb_raise (rb_eRuntimeError, "%s", e.what());
+	}
+}
+
+/******************
+t_disable_keepalive
+******************/
+
+static VALUE t_disable_keepalive (VALUE self)
+{
+	VALUE sig = rb_ivar_get (self, Intern_at_signature);
+	try {
+		return INT2NUM (evma_disable_keepalive(NUM2ULONG(sig)));
+	} catch (std::runtime_error e) {
+		rb_raise (rb_eRuntimeError, "%s", e.what());
+	}
+}
+
 /***************
 t_get_loop_time
 ****************/
 
 static VALUE t_get_loop_time (VALUE self UNUSED)
 {
-	#ifndef HAVE_RB_TIME_NEW
-	static VALUE cTime = rb_path2class("Time");
-	static ID at = rb_intern("at");
-	#endif
-
 	uint64_t current_time = evma_get_current_loop_time();
-	if (current_time != 0) {
-	#ifndef HAVE_RB_TIME_NEW
-		return rb_funcall(cTime, at, 2, INT2NUM(current_time / 1000000), INT2NUM(current_time % 1000000));
-	#else
-		return rb_time_new(current_time / 1000000, current_time % 1000000);
-	#endif
+	if (current_time == 0) {
+		return Qnil;
 	}
-	return Qnil;
+
+	// Generally the industry has moved to 64-bit time_t, this is just in case we're 32-bit time_t.
+	if (sizeof(time_t) < 8 && current_time > INT_MAX) {
+		return rb_funcall(rb_cTime, Intern_at, 2, INT2NUM(current_time / 1000000), INT2NUM(current_time % 1000000));
+	} else {
+		return rb_time_new(current_time / 1000000, current_time % 1000000);
+	}
 }
 
 
@@ -1289,7 +1497,7 @@ extern "C" void Init_rubyeventmachine()
 {
 	// Lookup Process::Status for get_subprocess_status
 	VALUE rb_mProcess = rb_const_get(rb_cObject, rb_intern("Process"));
-	rb_cProcStatus = rb_const_get(rb_mProcess, rb_intern("Status"));
+	rb_cProcessStatus = rb_const_get(rb_mProcess, rb_intern("Status"));
 
 	// Tuck away some symbol values so we don't have to look 'em up every time we need 'em.
 	Intern_at_signature = rb_intern ("@signature");
@@ -1301,6 +1509,7 @@ extern "C" void Init_rubyeventmachine()
 	Intern_run_deferred_callbacks = rb_intern ("run_deferred_callbacks");
 	Intern_delete = rb_intern ("delete");
 	Intern_call = rb_intern ("call");
+	Intern_at = rb_intern("at");
 	Intern_receive_data = rb_intern ("receive_data");
 	Intern_ssl_handshake_completed = rb_intern ("ssl_handshake_completed");
 	Intern_ssl_verify_peer = rb_intern ("ssl_verify_peer");
@@ -1325,20 +1534,27 @@ extern "C" void Init_rubyeventmachine()
 	EM_eConnectionNotBound = rb_define_class_under (EmModule, "ConnectionNotBound", rb_eRuntimeError);
 	EM_eUnknownTimerFired = rb_define_class_under (EmModule, "UnknownTimerFired", rb_eRuntimeError);
 	EM_eUnsupported = rb_define_class_under (EmModule, "Unsupported", rb_eRuntimeError);
+	EM_eInvalidSignature = rb_define_class_under (EmModule, "InvalidSignature", rb_eRuntimeError);
+	EM_eInvalidPrivateKey = rb_define_class_under (EmModule, "InvalidPrivateKey", rb_eRuntimeError);
 
 	rb_define_module_function (EmModule, "initialize_event_machine", (VALUE(*)(...))t_initialize_event_machine, 0);
 	rb_define_module_function (EmModule, "run_machine_once", (VALUE(*)(...))t_run_machine_once, 0);
 	rb_define_module_function (EmModule, "run_machine", (VALUE(*)(...))t_run_machine, 0);
 	rb_define_module_function (EmModule, "run_machine_without_threads", (VALUE(*)(...))t_run_machine, 0);
+	rb_define_module_function (EmModule, "get_timer_count", (VALUE(*)(...))t_get_timer_count, 0);
 	rb_define_module_function (EmModule, "add_oneshot_timer", (VALUE(*)(...))t_add_oneshot_timer, 1);
 	rb_define_module_function (EmModule, "get_real_time", (VALUE(*)(...))evma_get_real_time, 0);
 	rb_define_module_function (EmModule, "start_tcp_server", (VALUE(*)(...))t_start_server, 2);
 	rb_define_module_function (EmModule, "stop_tcp_server", (VALUE(*)(...))t_stop_server, 1);
 	rb_define_module_function (EmModule, "start_unix_server", (VALUE(*)(...))t_start_unix_server, 1);
 	rb_define_module_function (EmModule, "attach_sd", (VALUE(*)(...))t_attach_sd, 1);
-	rb_define_module_function (EmModule, "set_tls_parms", (VALUE(*)(...))t_set_tls_parms, 4);
+	rb_define_module_function (EmModule, "set_tls_parms", (VALUE(*)(...))t_set_tls_parms, 13);
 	rb_define_module_function (EmModule, "start_tls", (VALUE(*)(...))t_start_tls, 1);
 	rb_define_module_function (EmModule, "get_peer_cert", (VALUE(*)(...))t_get_peer_cert, 1);
+	rb_define_module_function (EmModule, "get_cipher_bits", (VALUE(*)(...))t_get_cipher_bits, 1);
+	rb_define_module_function (EmModule, "get_cipher_name", (VALUE(*)(...))t_get_cipher_name, 1);
+	rb_define_module_function (EmModule, "get_cipher_protocol", (VALUE(*)(...))t_get_cipher_protocol, 1);
+	rb_define_module_function (EmModule, "get_sni_hostname", (VALUE(*)(...))t_get_sni_hostname, 1);
 	rb_define_module_function (EmModule, "send_data", (VALUE(*)(...))t_send_data, 3);
 	rb_define_module_function (EmModule, "send_datagram", (VALUE(*)(...))t_send_datagram, 5);
 	rb_define_module_function (EmModule, "close_connection", (VALUE(*)(...))t_close_connection, 2);
@@ -1371,6 +1587,7 @@ extern "C" void Init_rubyeventmachine()
 
 	rb_define_module_function (EmModule, "watch_pid", (VALUE (*)(...))t_watch_pid, 1);
 	rb_define_module_function (EmModule, "unwatch_pid", (VALUE (*)(...))t_unwatch_pid, 1);
+	rb_define_module_function (EmModule, "watch_only?", (VALUE (*)(...))t_watch_only_p, 1);
 
 	rb_define_module_function (EmModule, "current_time", (VALUE(*)(...))t_get_loop_time, 0);
 
@@ -1412,10 +1629,61 @@ extern "C" void Init_rubyeventmachine()
 	rb_define_module_function (EmModule, "kqueue?", (VALUE(*)(...))t__kqueue_p, 0);
 
 	rb_define_module_function (EmModule, "ssl?", (VALUE(*)(...))t__ssl_p, 0);
+	rb_define_module_function(EmModule, "stopping?",(VALUE(*)(...))t_stopping, 0);
 
 	rb_define_module_function (EmModule, "set_tick_timing", (VALUE(*)(...))set_tick_timing, 3);
 
 	rb_define_method (EmConnection, "get_outbound_data_size", (VALUE(*)(...))conn_get_outbound_data_size, 0);
 	rb_define_method (EmConnection, "associate_callback_target", (VALUE(*)(...))conn_associate_callback_target, 1);
-}
+	rb_define_method (EmConnection, "enable_keepalive", (VALUE(*)(...))t_enable_keepalive, -1);
+	rb_define_method (EmConnection, "disable_keepalive", (VALUE(*)(...))t_disable_keepalive, 0);
 
+	// Connection states
+	rb_define_const (EmModule, "TimerFired",               INT2NUM(EM_TIMER_FIRED               ));
+	rb_define_const (EmModule, "ConnectionData",           INT2NUM(EM_CONNECTION_READ           ));
+	rb_define_const (EmModule, "ConnectionUnbound",        INT2NUM(EM_CONNECTION_UNBOUND        ));
+	rb_define_const (EmModule, "ConnectionAccepted",       INT2NUM(EM_CONNECTION_ACCEPTED       ));
+	rb_define_const (EmModule, "ConnectionCompleted",      INT2NUM(EM_CONNECTION_COMPLETED      ));
+	rb_define_const (EmModule, "LoopbreakSignalled",       INT2NUM(EM_LOOPBREAK_SIGNAL          ));
+	rb_define_const (EmModule, "ConnectionNotifyReadable", INT2NUM(EM_CONNECTION_NOTIFY_READABLE));
+	rb_define_const (EmModule, "ConnectionNotifyWritable", INT2NUM(EM_CONNECTION_NOTIFY_WRITABLE));
+	rb_define_const (EmModule, "SslHandshakeCompleted",    INT2NUM(EM_SSL_HANDSHAKE_COMPLETED   ));
+	rb_define_const (EmModule, "SslVerify",                INT2NUM(EM_SSL_VERIFY                ));
+	// EM_PROXY_TARGET_UNBOUND = 110,
+	// EM_PROXY_COMPLETED = 111
+
+	// SSL Protocols
+	rb_define_const (EmModule, "EM_PROTO_SSLv2",   INT2NUM(EM_PROTO_SSLv2  ));
+	rb_define_const (EmModule, "EM_PROTO_SSLv3",   INT2NUM(EM_PROTO_SSLv3  ));
+	rb_define_const (EmModule, "EM_PROTO_TLSv1",   INT2NUM(EM_PROTO_TLSv1  ));
+	rb_define_const (EmModule, "EM_PROTO_TLSv1_1", INT2NUM(EM_PROTO_TLSv1_1));
+	rb_define_const (EmModule, "EM_PROTO_TLSv1_2", INT2NUM(EM_PROTO_TLSv1_2));
+#ifdef TLS1_3_VERSION
+	rb_define_const (EmModule, "EM_PROTO_TLSv1_3", INT2NUM(EM_PROTO_TLSv1_3));
+#endif
+
+#ifdef OPENSSL_NO_SSL3
+	/* True if SSL3 is not available */
+	rb_define_const (EmModule, "OPENSSL_NO_SSL3", Qtrue);
+	rb_define_const (EmModule, "OPENSSL_NO_SSL2", Qtrue);
+#else
+	rb_define_const (EmModule, "OPENSSL_NO_SSL3", Qfalse);
+#ifdef OPENSSL_NO_SSL2
+	rb_define_const (EmModule, "OPENSSL_NO_SSL2", Qtrue);
+#else
+	rb_define_const (EmModule, "OPENSSL_NO_SSL2", Qfalse);
+#endif
+#endif
+
+  // OpenSSL Build / Runtime/Load versions
+
+	/* Version of OpenSSL that EventMachine was compiled with */
+	rb_define_const(EmModule, "OPENSSL_VERSION", rb_str_new2(OPENSSL_VERSION_TEXT));
+
+#if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10100000
+	/* Version of OpenSSL that EventMachine loaded with */
+	rb_define_const(EmModule, "OPENSSL_LIBRARY_VERSION", rb_str_new2(OpenSSL_version(OPENSSL_VERSION)));
+#else
+	rb_define_const(EmModule, "OPENSSL_LIBRARY_VERSION", rb_str_new2(SSLeay_version(SSLEAY_VERSION)));
+#endif
+}

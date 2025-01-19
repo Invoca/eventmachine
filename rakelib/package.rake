@@ -25,7 +25,7 @@ else
   def setup_cross_compilation(ext)
     unless RUBY_PLATFORM =~ /mswin|mingw/
       ext.cross_compile = true
-      ext.cross_platform = ['x86-mingw32', 'x86-mswin32-60']
+      ext.cross_platform = ['x86-mingw32', 'x64-mingw32']
     end
   end
   def hack_cross_compilation(ext)
@@ -96,3 +96,25 @@ def gem_cmd(action, name, *args)
 end
 
 Rake::Task[:clean].enhance [:clobber_package]
+
+# DevKit task following the example of Luis Lavena's test-ruby-c-extension
+task :devkit do
+  begin
+    require "devkit"
+  rescue LoadError => e
+    abort "Failed to activate RubyInstaller's DevKit required for compilation."
+  end
+end
+
+if RUBY_PLATFORM =~ /mingw|mswin/ && ENV['GITHUB_ACTIONS'].nil?
+  Rake::Task['compile'].prerequisites.unshift 'devkit'
+end
+
+desc "Build binary gems for Windows with rake-compiler-dock"
+task 'gem:windows' do
+  require 'rake_compiler_dock'
+  RakeCompilerDock.sh <<-EOT
+    RUBY_CC_VERSION="${RUBY_CC_VERSION//1.9.2/}"
+    bundle && rake cross native gem
+  EOT
+end

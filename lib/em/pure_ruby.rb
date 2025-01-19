@@ -33,6 +33,83 @@ require 'forwardable'
 require 'socket'
 require 'fcntl'
 require 'set'
+require 'openssl'
+
+module EventMachine
+  # @private
+  class Error < Exception; end
+  # @private
+  class UnknownTimerFired < RuntimeError; end
+  # @private
+  class Unsupported < RuntimeError; end
+  # @private
+  class ConnectionError < RuntimeError; end
+  # @private
+  class ConnectionNotBound < RuntimeError; end
+  class InvalidPrivateKey < RuntimeError; end
+
+  # Older versions of Ruby may not provide the SSLErrorWaitReadable
+  # OpenSSL class. Create an error class to act as a "proxy".
+  if defined?(OpenSSL::SSL::SSLErrorWaitReadable)
+    SSLConnectionWaitReadable = OpenSSL::SSL::SSLErrorWaitReadable
+  else
+    SSLConnectionWaitReadable = IO::WaitReadable
+  end
+
+  # Older versions of Ruby may not provide the SSLErrorWaitWritable
+  # OpenSSL class. Create an error class to act as a "proxy".
+  if defined?(OpenSSL::SSL::SSLErrorWaitWritable)
+    SSLConnectionWaitWritable = OpenSSL::SSL::SSLErrorWaitWritable
+  else
+    SSLConnectionWaitWritable = IO::WaitWritable
+  end
+end
+
+module EventMachine
+  class CertificateCreator
+    attr_reader :cert, :key
+
+    def initialize
+      @key = OpenSSL::PKey::RSA.new(2048)
+      public_key = @key.public_key
+      subject = "/C=EventMachine/O=EventMachine/OU=EventMachine/CN=EventMachine"
+      @cert = OpenSSL::X509::Certificate.new
+      @cert.subject = @cert.issuer = OpenSSL::X509::Name.parse(subject)
+      @cert.not_before = Time.now
+      @cert.not_after = Time.now + 365 * 24 * 60 * 60
+      @cert.public_key = public_key
+      @cert.serial = 0x0
+      @cert.version = 2
+      factory = OpenSSL::X509::ExtensionFactory.new
+      factory.subject_certificate = @cert
+      factory.issuer_certificate = @cert
+      @cert.extensions = [
+        factory.create_extension("basicConstraints","CA:TRUE", true),
+        factory.create_extension("subjectKeyIdentifier", "hash")
+      ]
+      @cert.add_extension factory.create_extension("authorityKeyIdentifier", "keyid:always,issuer:always")
+      @cert.sign(@key, OpenSSL::Digest::SHA1.new)
+    end
+  end
+
+  # @private
+  DefaultCertificate = CertificateCreator.new
+
+  # @private
+  # Defined by RFC7919, Appendix A.1, and copied from
+  # OpenSSL::SSL::SSLContext::DH_ffdhe2048.
+  DH_ffdhe2048 = OpenSSL::PKey::DH.new <<-_end_of_pem_
+-----BEGIN DH PARAMETERS-----
+MIIBCAKCAQEA//////////+t+FRYortKmq/cViAnPTzx2LnFg84tNpWp4TZBFGQz
++8yTnc4kmz75fS/jY2MMddj2gbICrsRhetPfHtXV/WVhJDP1H18GbtCFY2VVPe0a
+87VXE15/V8k1mE8McODmi3fipona8+/och3xWKE2rec1MKzKT0g6eXq8CrGCsyT7
+YdEIqUuyyOP7uWrat2DX9GgdT0Kj3jlN9K5W7edjcrsZCwenyO4KbXCeAvzhzffi
+7MA0BM0oNC9hkXL+nOmFg/+OTxIy7vKBg8P+OxtMb61zO7X8vC7CIAXFjvGDfRaD
+ssbzSibBsu/6iGtCOGEoXJf//////////wIBAg==
+-----END DH PARAMETERS-----
+  _end_of_pem_
+  private_constant :DH_ffdhe2048
+end
 
 # @private
 module EventMachine
@@ -54,7 +131,7 @@ module EventMachine
     # processor still wants them in seconds.
     # @private
     def add_oneshot_timer interval
-      Reactor.instance.install_oneshot_timer(interval / 1000)
+      Reactor.instance.install_oneshot_timer(interval.to_f / 1000)
     end
 
     # @private
@@ -64,6 +141,11 @@ module EventMachine
 
     # @private
     def release_machine
+    end
+
+
+    def stopping?
+      return Reactor.instance.stop_scheduled
     end
 
     # @private
@@ -87,14 +169,10 @@ module EventMachine
       selectable.send_data data
     end
 
-
-    # The extension version does NOT raise any kind of an error if an attempt is made
-    # to close a non-existent connection. Not sure whether we should. For now, we'll
-    # raise an error here in that case.
     # @private
     def close_connection target, after_writing
-      selectable = Reactor.instance.get_selectable( target ) or raise "unknown close_connection target"
-      selectable.schedule_close after_writing
+      selectable = Reactor.instance.get_selectable( target )
+      selectable.schedule_close after_writing if selectable
     end
 
     # @private
@@ -132,6 +210,12 @@ module EventMachine
     end
 
     # @private
+    def get_sockname sig
+      selectable = Reactor.instance.get_selectable( sig ) or raise "unknown get_sockname target"
+      selectable.get_sockname
+    end
+
+    # @private
     def open_udp_socket host, port
       EvmaUDPSocket.create(host, port).uuid
     end
@@ -158,10 +242,202 @@ module EventMachine
     def epoll
     end
 
-    # This method is not implemented for pure-Ruby implementation
+    # Pure ruby mode does not allow setting epoll
+    # @private
+    def epoll=(bool)
+      bool and raise Unsupported, "EM.epoll is not supported in pure_ruby mode"
+    end
+
+    # Pure ruby mode does not support epoll
+    # @private
+    def epoll?;  false end
+
+    # Pure ruby mode does not support kqueue
+    # @private
+    def kqueue?; false end
+
+    # Pure ruby mode does not allow setting kqueue
+    # @private
+    def kqueue=(bool)
+      bool and raise Unsupported, "EM.kqueue is not supported in pure_ruby mode"
+    end
+
     # @private
     def ssl?
-      false
+      true
+    end
+
+    def tls_parm_set?(parm)
+      !(parm.nil? || parm.empty?)
+    end
+
+    # This method takes a series of positional arguments for specifying such
+    # things as private keys and certificate chains. It's expected that the
+    # parameter list will grow as we add more supported features. ALL of these
+    # parameters are optional, and can be specified as empty or nil strings.
+    # @private
+    def set_tls_parms signature, priv_key_path, priv_key, priv_key_pass, cert_chain_path, cert, verify_peer, fail_if_no_peer_cert, sni_hostname, cipher_list, ecdh_curve, dhparam, protocols_bitmask
+      bitmask = protocols_bitmask
+      ssl_options = OpenSSL::SSL::OP_ALL
+      if defined?(OpenSSL::SSL::OP_NO_SSLv2)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_SSLv2
+        ssl_options |= OpenSSL::SSL::OP_NO_SSLv2 if EM_PROTO_SSLv2 & bitmask == 0
+      end
+      if defined?(OpenSSL::SSL::OP_NO_SSLv3)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_SSLv3
+        ssl_options |= OpenSSL::SSL::OP_NO_SSLv3 if EM_PROTO_SSLv3 & bitmask == 0
+      end
+      if defined?(OpenSSL::SSL::OP_NO_TLSv1)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_TLSv1
+        ssl_options |= OpenSSL::SSL::OP_NO_TLSv1 if EM_PROTO_TLSv1 & bitmask == 0
+      end
+      if defined?(OpenSSL::SSL::OP_NO_TLSv1_1)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_TLSv1_1
+        ssl_options |= OpenSSL::SSL::OP_NO_TLSv1_1 if EM_PROTO_TLSv1_1 & bitmask == 0
+      end
+      if defined?(OpenSSL::SSL::OP_NO_TLSv1_2)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_TLSv1_2
+        ssl_options |= OpenSSL::SSL::OP_NO_TLSv1_2 if EM_PROTO_TLSv1_2 & bitmask == 0
+      end
+      if defined?(OpenSSL::SSL::OP_NO_TLSv1_3)
+        ssl_options &= ~OpenSSL::SSL::OP_NO_TLSv1_3
+        ssl_options |= OpenSSL::SSL::OP_NO_TLSv1_3 if EM_PROTO_TLSv1_3 & bitmask == 0
+      end
+      @tls_parms ||= {}
+      @tls_parms[signature] = {
+        :verify_peer => verify_peer,
+        :fail_if_no_peer_cert => fail_if_no_peer_cert,
+        :ssl_options => ssl_options
+      }
+      @tls_parms[signature][:priv_key] = File.binread(priv_key_path) if tls_parm_set?(priv_key_path)
+      @tls_parms[signature][:priv_key] = priv_key if tls_parm_set?(priv_key)
+      @tls_parms[signature][:priv_key_pass] = priv_key_pass if tls_parm_set?(priv_key_pass)
+      @tls_parms[signature][:cert_chain] = File.binread(cert_chain_path) if tls_parm_set?(cert_chain_path)
+      @tls_parms[signature][:cert_chain] = cert if tls_parm_set?(cert)
+      @tls_parms[signature][:sni_hostname] = sni_hostname if tls_parm_set?(sni_hostname)
+      @tls_parms[signature][:cipher_list] = cipher_list.gsub(/,\s*/, ':') if tls_parm_set?(cipher_list)
+      @tls_parms[signature][:dhparam] = File.read(dhparam) if tls_parm_set?(dhparam)
+      @tls_parms[signature][:ecdh_curve] = ecdh_curve if tls_parm_set?(ecdh_curve)
+    end
+
+    PEM_CERTIFICATE = /
+      ^-----BEGIN CERTIFICATE-----\n
+      .*?\n
+      -----END CERTIFICATE-----\n
+    /mx
+    private_constant :PEM_CERTIFICATE
+
+    def start_tls signature
+      selectable = Reactor.instance.get_selectable(signature) or raise "unknown io selectable for start_tls"
+      tls_parms = @tls_parms[signature]
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.options = tls_parms[:ssl_options]
+      ctx.cert_store = OpenSSL::X509::Store.new
+      ctx.cert_store.set_default_paths
+      cert, *extra_chain_cert =
+        if (cert_chain = tls_parms[:cert_chain])
+          if OpenSSL::X509::Certificate.respond_to?(:load)
+            OpenSSL::X509::Certificate.load(cert_chain)
+          elsif cert_chain[PEM_CERTIFICATE]
+            # compatibility with openssl gem < 3.0 (ruby < 2.6)
+            cert_chain.scan(PEM_CERTIFICATE)
+              .map {|pem| OpenSSL::X509::Certificate.new(pem) }
+          else
+            [OpenSSL::X509::Certificate.new(cert_chain)]
+          end
+        elsif selectable.is_server
+          [DefaultCertificate.cert]
+        end
+      key =
+        if tls_parms[:priv_key]
+          OpenSSL::PKey::RSA.new(tls_parms[:priv_key], tls_parms[:priv_key_pass])
+        elsif selectable.is_server
+          DefaultCertificate.key
+        end
+      ctx.cert, ctx.key, ctx.extra_chain_cert = cert, key, extra_chain_cert
+      if tls_parms[:verify_peer]
+        ctx.verify_mode =
+          OpenSSL::SSL::VERIFY_PEER | OpenSSL::SSL::VERIFY_CLIENT_ONCE
+        if tls_parms[:fail_if_no_peer_cert]
+          ctx.verify_mode |= OpenSSL::SSL::VERIFY_FAIL_IF_NO_PEER_CERT
+        end
+        ctx.verify_callback = ->(preverify_ok, store_ctx) {
+          current_cert = store_ctx.current_cert.to_pem
+          EventMachine::event_callback selectable.uuid, SslVerify, current_cert
+        }
+      else
+        ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      end
+      ctx.servername_cb = Proc.new do |_, server_name|
+        tls_parms[:server_name] = server_name
+        nil
+      end
+      ctx.ciphers = tls_parms[:cipher_list] if tls_parms[:cipher_list]
+      if selectable.is_server
+        dhparam = if tls_parms[:dhparam]
+          OpenSSL::PKey::DH.new(tls_parms[:dhparam])
+        else
+          DH_ffdhe2048
+        end
+        if ctx.respond_to?(:tmp_dh=)
+          # openssl gem 3.1+ (shipped with ruby 3.2, compatible with ruby 2.6+)
+          ctx.tmp_dh = dhparam
+        else
+          ctx.tmp_dh_callback = proc { dhparam }
+        end
+        if tls_parms[:ecdh_curve]
+          ctx.ecdh_curves = tls_parms[:ecdh_curve]
+        end
+      end
+      begin
+        ctx.freeze
+      rescue OpenSSL::SSL::SSLError => err
+        if err.message.include?("SSL_CTX_use_PrivateKey") ||
+            err.message.include?("key values mismatch")
+          raise InvalidPrivateKey, err.message
+        end
+        raise
+      end
+
+      ssl_io = OpenSSL::SSL::SSLSocket.new(selectable, ctx)
+      ssl_io.sync_close = true
+      if tls_parms[:sni_hostname]
+        ssl_io.hostname = tls_parms[:sni_hostname] if ssl_io.respond_to?(:hostname=)
+      end
+      selectable._evma_start_tls(ssl_io)
+    end
+
+    def get_peer_cert signature
+      selectable = Reactor.instance.get_selectable(signature) or raise "unknown get_peer_cert target"
+      if selectable.io.respond_to?(:peer_cert) && selectable.io.peer_cert
+        selectable.io.peer_cert.to_pem
+      else
+        nil
+      end
+    end
+
+    def get_cipher_name signature
+      selectable = Reactor.instance.get_selectable(signature) or raise "unknown get_cipher_name target"
+      selectable.io.respond_to?(:cipher) ? selectable.io.cipher[0] : nil
+    end
+
+    def get_cipher_protocol signature
+      selectable = Reactor.instance.get_selectable(signature) or raise "unknown get_cipher_protocol target"
+      selectable.io.respond_to?(:cipher) ? selectable.io.cipher[1] : nil
+    end
+
+    def get_cipher_bits signature
+      selectable = Reactor.instance.get_selectable(signature) or raise "unknown get_cipher_bits target"
+      selectable.io.respond_to?(:cipher) ? selectable.io.cipher[2] : nil
+    end
+
+    def get_sni_hostname signature
+      @tls_parms ||= {}
+      if @tls_parms[signature]
+        @tls_parms[signature][:server_name]
+      else
+        nil
+      end
     end
 
     # This method is a no-op in the pure-Ruby implementation. We simply return Ruby's built-in
@@ -179,13 +455,13 @@ module EventMachine
 
     # @private
     def get_sock_opt signature, level, optname
-      selectable = Reactor.instance.get_selectable( signature ) or raise "unknown get_peername target"
+      selectable = Reactor.instance.get_selectable( signature ) or raise "unknown get_sock_opt target"
       selectable.getsockopt level, optname
     end
 
     # @private
     def set_sock_opt signature, level, optname, optval
-      selectable = Reactor.instance.get_selectable( signature ) or raise "unknown get_peername target"
+      selectable = Reactor.instance.get_selectable( signature ) or raise "unknown set_sock_opt target"
       selectable.setsockopt level, optname, optval
     end
 
@@ -218,13 +494,18 @@ module EventMachine
       r = Reactor.instance.get_selectable( sig ) or raise "unknown set_comm_inactivity_timeout target"
       r.set_inactivity_timeout tm
     end
+
+    # @private
+    def set_pending_connect_timeout sig, tm
+      # Needs to be implemented. Currently a no-op stub to allow
+      # certain software to operate with the EM pure-ruby.
+    end
+
+    # @private
+    def report_connection_error_status signature
+      get_sock_opt(signature, Socket::SOL_SOCKET, Socket::SO_ERROR).int
+    end
   end
-end
-
-
-module EventMachine
-  # @private
-  class Error < Exception; end
 end
 
 module EventMachine
@@ -264,6 +545,45 @@ module EventMachine
   ConnectionCompleted = 104
   # @private
   LoopbreakSignalled = 105
+  # @private
+  ConnectionNotifyReadable = 106
+  # @private
+  ConnectionNotifyWritable = 107
+  # @private
+  SslHandshakeCompleted = 108
+  # @private
+  SslVerify = 109
+  # @private
+  EM_PROTO_SSLv2 = 2
+  # @private
+  EM_PROTO_SSLv3 = 4
+  # @private
+  EM_PROTO_TLSv1 = 8
+  # @private
+  EM_PROTO_TLSv1_1 = 16
+  # @private
+  EM_PROTO_TLSv1_2 = 32
+  # @private
+  EM_PROTO_TLSv1_3 = 64 if OpenSSL::SSL.const_defined?(:TLS1_3_VERSION)
+
+  # @private
+  OPENSSL_LIBRARY_VERSION = OpenSSL::OPENSSL_LIBRARY_VERSION
+  # @private
+  OPENSSL_VERSION = OpenSSL::OPENSSL_VERSION
+
+  openssl_version_gt = ->(maj, min, pat) {
+    if defined?(OpenSSL::OPENSSL_VERSION_NUMBER)
+      OpenSSL::OPENSSL_VERSION_NUMBER >= (maj << 28) | (min << 20) | (pat << 12)
+    else
+      false
+    end
+  }
+  # @private
+  # OpenSSL 1.1.0 removed support for SSLv2
+  OPENSSL_NO_SSL2 = openssl_version_gt.(1, 1, 0)
+  # @private
+  # OpenSSL 1.1.0 disabled support for SSLv3 (by default)
+  OPENSSL_NO_SSL3 = openssl_version_gt.(1, 1, 0)
 end
 
 module EventMachine
@@ -273,17 +593,19 @@ module EventMachine
 
     HeartbeatInterval = 2
 
-    attr_reader :current_loop_time
+    attr_reader :current_loop_time, :stop_scheduled
 
     def initialize
       initialize_for_run
     end
 
+    def get_timer_count
+      @timers.size
+    end
+
     def install_oneshot_timer interval
       uuid = UuidGenerator::generate
-      #@timers << [Time.now + interval, uuid]
-      #@timers.sort! {|a,b| a.first <=> b.first}
-      @timers.add([Time.now + interval, uuid])
+      (@timers_to_add || @timers) << [Time.now + interval, uuid]
       uuid
     end
 
@@ -294,7 +616,9 @@ module EventMachine
       @running = false
       @stop_scheduled = false
       @selectables ||= {}; @selectables.clear
-      @timers = SortedSet.new # []
+      @timers = SortedSet.new
+      @timers_to_add = SortedSet.new
+      @timers_iterating = false # only set while iterating @timers
       set_timer_quantum(0.1)
       @current_loop_time = Time.now
       @next_heartbeat = @current_loop_time + HeartbeatInterval
@@ -336,18 +660,22 @@ module EventMachine
     end
 
     def run_timers
+      timers_to_delete = []
+      @timers_iterating = true
       @timers.each {|t|
         if t.first <= @current_loop_time
-          @timers.delete t
+          timers_to_delete << t
           EventMachine::event_callback "", TimerFired, t.last
         else
           break
         end
       }
-      #while @timers.length > 0 and @timers.first.first <= now
-      #  t = @timers.shift
-      #  EventMachine::event_callback "", TimerFired, t.last
-      #end
+    ensure
+      timers_to_delete.map{|c| @timers.delete c}
+      timers_to_delete = nil
+      @timers_to_add.each do |t| @timers << t end
+      @timers_to_add.clear
+      @timers_iterating = false
     end
 
     def run_heartbeats
@@ -371,6 +699,9 @@ module EventMachine
       @selectables.delete_if {|k,io|
         if io.close_scheduled?
           io.close
+          begin
+            EventMachine::event_callback io.uuid, ConnectionUnbound, nil
+          rescue ConnectionNotBound; end
           true
         end
       }
@@ -409,8 +740,9 @@ module EventMachine
     end
 
     def signal_loopbreak
-      #@loopbreak_writer.write '+' if @loopbreak_writer
-      @loopbreak_writer.send('+',0,"127.0.0.1",@loopbreak_port) if @loopbreak_writer
+      begin
+        @loopbreak_writer.send('+',0,"127.0.0.1",@loopbreak_port) if @loopbreak_writer
+      rescue IOError; end
     end
 
     def set_timer_quantum interval_in_seconds
@@ -424,30 +756,38 @@ end
 # @private
 class IO
   extend Forwardable
-  def_delegator :@my_selectable, :close_scheduled?
-  def_delegator :@my_selectable, :select_for_reading?
-  def_delegator :@my_selectable, :select_for_writing?
-  def_delegator :@my_selectable, :eventable_read
-  def_delegator :@my_selectable, :eventable_write
-  def_delegator :@my_selectable, :uuid
-  def_delegator :@my_selectable, :send_data
-  def_delegator :@my_selectable, :schedule_close
-  def_delegator :@my_selectable, :get_peername
-  def_delegator :@my_selectable, :send_datagram
-  def_delegator :@my_selectable, :get_outbound_data_size
-  def_delegator :@my_selectable, :set_inactivity_timeout
-  def_delegator :@my_selectable, :heartbeat
+  def_delegator :@eventmachine_selectable, :close_scheduled?
+  def_delegator :@eventmachine_selectable, :select_for_reading?
+  def_delegator :@eventmachine_selectable, :select_for_writing?
+  def_delegator :@eventmachine_selectable, :eventable_read
+  def_delegator :@eventmachine_selectable, :eventable_write
+  def_delegator :@eventmachine_selectable, :uuid
+  def_delegator :@eventmachine_selectable, :is_server
+  def_delegator :@eventmachine_selectable, :is_server=
+  def_delegator :@eventmachine_selectable, :send_data
+  def_delegator :@eventmachine_selectable, :schedule_close
+  def_delegator :@eventmachine_selectable, :get_peername
+  def_delegator :@eventmachine_selectable, :get_sockname
+  def_delegator :@eventmachine_selectable, :send_datagram
+  def_delegator :@eventmachine_selectable, :get_outbound_data_size
+  def_delegator :@eventmachine_selectable, :set_inactivity_timeout
+  def_delegator :@eventmachine_selectable, :heartbeat
+  def_delegator :@eventmachine_selectable, :io
+  def_delegator :@eventmachine_selectable, :io=
+  def_delegator :@eventmachine_selectable, :start_tls, :_evma_start_tls
 end
 
 module EventMachine
   # @private
   class Selectable
 
-    attr_reader :io, :uuid
+    attr_accessor :io, :is_server
+    attr_reader :uuid
 
     def initialize io
-      @uuid = UuidGenerator.generate
       @io = io
+      @uuid = UuidGenerator.generate
+      @is_server = false
       @last_activity = Reactor.instance.current_loop_time
 
       if defined?(Fcntl::F_GETFL)
@@ -468,7 +808,7 @@ module EventMachine
       @close_scheduled = false
       @close_requested = false
 
-      se = self; @io.instance_eval { @my_selectable = se }
+      se = self; @io.instance_eval { @eventmachine_selectable = se }
       Reactor.instance.add_selectable @io
     end
 
@@ -488,11 +828,23 @@ module EventMachine
       nil
     end
 
+    def get_sockname
+      nil
+    end
+
     def set_inactivity_timeout tm
       @inactivity_timeout = tm
     end
 
     def heartbeat
+    end
+
+    def schedule_close(after_writing=false)
+      if after_writing
+        @close_requested = true
+      else
+        @close_scheduled = true
+      end
     end
   end
 
@@ -547,9 +899,9 @@ module EventMachine
           data = io.sysread(4096)
           EventMachine::event_callback uuid, ConnectionData, data
         end
-      rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+      rescue Errno::EAGAIN, Errno::EWOULDBLOCK, SSLConnectionWaitReadable
         # no-op
-      rescue Errno::ECONNRESET, Errno::ECONNREFUSED, EOFError
+      rescue Errno::ECONNRESET, Errno::ECONNREFUSED, EOFError, Errno::EPIPE, OpenSSL::SSL::SSLError
         @close_scheduled = true
         EventMachine::event_callback uuid, ConnectionUnbound, nil
       end
@@ -584,9 +936,10 @@ module EventMachine
             @outbound_q.unshift data[w..-1]
             break
           end
-        rescue Errno::EAGAIN
+        rescue Errno::EAGAIN, SSLConnectionWaitReadable, SSLConnectionWaitWritable
           @outbound_q.unshift data
-        rescue EOFError, Errno::ECONNRESET, Errno::ECONNREFUSED
+          break
+        rescue EOFError, Errno::ECONNRESET, Errno::ECONNREFUSED, Errno::EPIPE, OpenSSL::SSL::SSLError
           @close_scheduled = true
           @outbound_q.clear
         end
@@ -602,22 +955,20 @@ module EventMachine
       end
     end
 
-    # #schedule_close
-    # The application wants to close the connection.
-    def schedule_close after_writing
-      if after_writing
-        @close_requested = true
-      else
-        @close_scheduled = true
-      end
-    end
-
     # #get_peername
     # This is defined in the normal way on connected stream objects.
     # Return an object that is suitable for passing to Socket#unpack_sockaddr_in or variants.
     # We could also use a convenience method that did the unpacking automatically.
     def get_peername
       io.getpeername
+    end
+
+    # #get_sockname
+    # This is defined in the normal way on connected stream objects.
+    # Return an object that is suitable for passing to Socket#unpack_sockaddr_in or variants.
+    # We could also use a convenience method that did the unpacking automatically.
+    def get_sockname
+      io.getsockname
     end
 
     # #get_outbound_data_size
@@ -643,6 +994,7 @@ end
 module EventMachine
   # @private
   class EvmaTCPClient < StreamObject
+    attr_reader :ssl_handshake_state
 
     def self.connect bind_addr, bind_port, host, port
       sd = Socket.new( Socket::AF_INET, Socket::SOCK_STREAM, 0 )
@@ -652,39 +1004,99 @@ module EventMachine
         # TODO, this assumes a current Ruby snapshot.
         # We need to degrade to a nonblocking connect otherwise.
         sd.connect_nonblock( Socket.pack_sockaddr_in( port, host ))
-      rescue Errno::EINPROGRESS
+      rescue Errno::ECONNREFUSED, Errno::EINPROGRESS
       end
       EvmaTCPClient.new sd
     end
 
-
     def initialize io
       super
       @pending = true
+      @ssl_handshake_state = nil
     end
 
+    TCP_ESTABLISHED = 1 # why isn't this already a const in Socket?
 
-    def select_for_writing?
-      @pending ? true : super
-    end
-
-    def select_for_reading?
-      @pending ? false : super
-    end
-
-    def eventable_write
-      if @pending
-        @pending = false
-        if 0 == io.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).unpack("i").first
-          EventMachine::event_callback uuid, ConnectionCompleted, ""
-        end
+    def ready?
+      if defined?(Socket::SOL_TCP) && defined?(Socket::TCP_INFO)
+        # Linux: tcpi_state is an unsigned char
+        #   struct tcp_info {
+        #       __u8    tcpi_state;
+        #       ...
+        #   }
+        sockinfo = io.getsockopt(Socket::SOL_TCP, Socket::TCP_INFO)
+        sockinfo.unpack("C").first == TCP_ESTABLISHED
+      elsif defined?(Socket::IPPROTO_TCP) && defined?(Socket::TCP_CONNECTION_INFO)
+        # NOTE: the following doesn't seem to work (according to GH actions)
+        #
+        # MacOS: tcpi_state is an unsigned char
+        #   struct tcp_connection_info {
+        #       u_int8_t   tcpi_state;     /* connection state */
+        #       ...
+        #   }
+        sockinfo = io.getsockopt(Socket::IPPROTO_TCP, Socket::TCP_CONNECTION_INFO)
+        sockinfo.unpack("C").first == TCP_ESTABLISHED
       else
-        super
+        sockerr = io.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR)
+        sockerr.unpack("i").first == 0 # NO ERROR
       end
     end
 
+    def eventable_read
+      check_handshake_complete and super
+    end
 
+    def eventable_write
+      check_handshake_complete and super
+    end
 
+    def start_tls(ssl_io)
+      self.io = ssl_io
+      @ssl_handshake_state = :init
+      check_handshake_complete
+    end
+
+    def check_handshake_complete
+      return true if ssl_handshake_state.nil? || ssl_handshake_state == :done
+      is_server ? io.accept_nonblock : io.connect_nonblock
+      @ssl_handshake_state = :done
+      EventMachine::event_callback uuid, SslHandshakeCompleted, ""
+      true
+    rescue SSLConnectionWaitReadable
+      @ssl_handshake_state = :wait_readable
+      false
+    rescue SSLConnectionWaitWritable
+      @ssl_handshake_state = :wait_writable
+      false
+    rescue OpenSSL::SSL::SSLError => error
+      if $VERBOSE || $DEBUG
+        warn "SSL Error in EventMachine check_handshake_complete: #{error}"
+      end
+      @ssl_handshake_state = error
+    rescue => error
+      warn "#{error.class} in EventMachine check_handshake_complete: #{error}"
+      @ssl_handshake_state = error
+    end
+
+    def pending?
+      if @pending
+        if ready?
+          @pending = false
+          EventMachine::event_callback uuid, ConnectionCompleted, ""
+        end
+      end
+      @pending
+    end
+
+    def select_for_writing?
+      pending?
+      super
+    end
+
+    def select_for_reading?
+      pending?
+      super
+    end
   end
 end
 
@@ -803,8 +1215,9 @@ module EventMachine
     def eventable_read
       begin
         10.times {
-          descriptor,peername = io.accept_nonblock
-          sd = StreamObject.new descriptor
+          descriptor, _peername = io.accept_nonblock
+          sd = EvmaTCPClient.new descriptor
+          sd.is_server = true
           EventMachine::event_callback uuid, ConnectionAccepted, sd.uuid
         }
       rescue Errno::EWOULDBLOCK, Errno::EAGAIN
@@ -859,7 +1272,7 @@ module EventMachine
     def eventable_read
       begin
         10.times {
-          descriptor,peername = io.accept_nonblock
+          descriptor, _peername = io.accept_nonblock
           sd = StreamObject.new descriptor
           EventMachine::event_callback uuid, ConnectionAccepted, sd.uuid
         }
@@ -1000,18 +1413,14 @@ module EventMachine
         @close_scheduled = true
         EventMachine::event_callback uuid, ConnectionUnbound, nil
       end
-
     end
-
 
     def send_data data
       send_datagram data, @return_address
     end
-
   end
 end
 
 # load base EM api on top, now that we have the underlying pure ruby
 # implementation defined
 require 'eventmachine'
-

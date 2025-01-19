@@ -36,7 +36,9 @@ import java.net.*;
 import java.util.concurrent.atomic.*;
 import java.security.*;
 
-public class EmReactor {
+public class EmReactor implements EmReactorInterface
+{
+	private static final NullEventableChannel NULL_EVENTABLE_CHANNEL = new NullEventableChannel();
 	public final int EM_TIMER_FIRED = 100;
 	public final int EM_CONNECTION_READ = 101;
 	public final int EM_CONNECTION_UNBOUND = 102;
@@ -48,7 +50,13 @@ public class EmReactor {
 	public final int EM_SSL_HANDSHAKE_COMPLETED = 108;
 	public final int EM_SSL_VERIFY = 109;
 	public final int EM_PROXY_TARGET_UNBOUND = 110;
-    public final int EM_PROXY_COMPLETED = 111;
+	public final int EM_PROXY_COMPLETED = 111;
+
+	public final int EM_PROTO_SSLv2 = 2;
+	public final int EM_PROTO_SSLv3 = 4;
+	public final int EM_PROTO_TLSv1 = 8;
+	public final int EM_PROTO_TLSv1_1 = 16;
+	public final int EM_PROTO_TLSv1_2 = 32;
 
 	private Selector mySelector;
 	private TreeMap<Long, ArrayList<Long>> Timers;
@@ -126,7 +134,7 @@ public class EmReactor {
 		while (iter2.hasNext()) {
 			long b = iter2.next();
 
-			EventableChannel ec = Connections.get(b);
+			EventableChannel ec = getConnection(b);
 			if (ec != null) {
 				try {
 					ec.register();
@@ -169,9 +177,9 @@ public class EmReactor {
 			if (diff <= 0)
 				timeout = -1; // don't wait, just poll once
 			else
-				timeout = diff;
+				timeout = diff > timerQuantum ? timerQuantum : diff;
 		} else {
-			timeout = 0; // wait indefinitely
+			timeout = timerQuantum;
 		}
 
 		try {
@@ -373,7 +381,7 @@ public class EmReactor {
 		}
 	}
 
-	public long installOneshotTimer (int milliseconds) {
+	public long installOneshotTimer (long milliseconds) {
 		long s = createBinding();
 		long deadline = new Date().getTime() + milliseconds;
 
@@ -431,7 +439,17 @@ public class EmReactor {
 	}
 
 	public void sendData (long sig, ByteBuffer bb) throws IOException {
-		Connections.get(sig).scheduleOutboundData( bb );
+		getConnection(sig).scheduleOutboundData(bb);
+	}
+
+	private EventableChannel getConnection(long sig)
+	{
+		EventableChannel channel = Connections.get(sig);
+		if (channel == null)
+		{
+			channel = NULL_EVENTABLE_CHANNEL;
+		}
+		return channel;
 	}
 
 	public void sendData (long sig, byte[] data) throws IOException {
@@ -439,7 +457,7 @@ public class EmReactor {
 	}
 
 	public void setCommInactivityTimeout (long sig, long mills) {
-		Connections.get(sig).setCommInactivityTimeout (mills);
+		getConnection(sig).setCommInactivityTimeout(mills);
 	}
 
 	public void sendDatagram (long sig, byte[] data, int length, String recipAddress, int recipPort) {
@@ -447,7 +465,7 @@ public class EmReactor {
 	}
 
 	public void sendDatagram (long sig, ByteBuffer bb, String recipAddress, int recipPort) {
-		(Connections.get(sig)).scheduleOutboundDatagram( bb, recipAddress, recipPort);
+		(getConnection(sig)).scheduleOutboundDatagram( bb, recipAddress, recipPort);
 	}
 
 	public long connectTcpServer (String address, int port) {
@@ -494,7 +512,7 @@ public class EmReactor {
 	}
 
 	public void closeConnection (long sig, boolean afterWriting) {
-		EventableChannel ec = Connections.get(sig);
+		EventableChannel ec = getConnection(sig);
 		if (ec != null)
 			if (ec.scheduleClose (afterWriting))
 				UnboundConnections.add (sig);
@@ -511,7 +529,7 @@ public class EmReactor {
 	}
 
 	public void startTls (long sig) throws NoSuchAlgorithmException, KeyManagementException {
-		Connections.get(sig).startTls();
+		getConnection(sig).startTls();
 	}
 
 	public void setTimerQuantum (int mills) {
@@ -521,11 +539,27 @@ public class EmReactor {
 	}
 
 	public Object[] getPeerName (long sig) {
-		return Connections.get(sig).getPeerName();
+		EventableChannel channel = Connections.get(sig);
+		if (channel != null) {
+			return Connections.get(sig).getPeerName();
+		}
+		else {
+			ServerSocketChannel acceptor = Acceptors.get(sig);
+			return  new Object[] { acceptor.socket().getLocalPort(),
+					acceptor.socket().getInetAddress().getHostAddress() };
+		}
 	}
 
 	public Object[] getSockName (long sig) {
-		return Connections.get(sig).getSockName();
+		EventableChannel channel = Connections.get(sig);
+		if (channel != null) {
+			return Connections.get(sig).getSockName();
+		}
+		else {
+			ServerSocketChannel acceptor = Acceptors.get(sig);
+			return new Object[] { acceptor.socket().getLocalPort(),
+				acceptor.socket().getInetAddress().getHostAddress() };
+		}
 	}
 
 	public long attachChannel (SocketChannel sc, boolean watch_mode) {
@@ -544,7 +578,7 @@ public class EmReactor {
 	}
 
 	public SocketChannel detachChannel (long sig) {
-		EventableSocketChannel ec = (EventableSocketChannel) Connections.get (sig);
+		EventableSocketChannel ec = (EventableSocketChannel) getConnection(sig);
 		if (ec != null) {
 			UnboundConnections.add (sig);
 			return ec.getChannel();
@@ -554,19 +588,19 @@ public class EmReactor {
 	}
 
 	public void setNotifyReadable (long sig, boolean mode) {
-		((EventableSocketChannel) Connections.get(sig)).setNotifyReadable(mode);
+		((EventableSocketChannel) getConnection(sig)).setNotifyReadable(mode);
 	}
 
 	public void setNotifyWritable (long sig, boolean mode) {
-		((EventableSocketChannel) Connections.get(sig)).setNotifyWritable(mode);
+		((EventableSocketChannel) getConnection(sig)).setNotifyWritable(mode);
 	}
 
 	public boolean isNotifyReadable (long sig) {
-		return Connections.get(sig).isNotifyReadable();
+		return getConnection(sig).isNotifyReadable();
 	}
 
 	public boolean isNotifyWritable (long sig) {
-		return Connections.get(sig).isNotifyWritable();
+		return getConnection(sig).isNotifyWritable();
 	}
 
 	public boolean pauseConnection (long sig) {
@@ -586,6 +620,6 @@ public class EmReactor {
 	}
 	
 	public int getConnectionCount() {
-	  return Connections.size() + Acceptors.size();
+		return Connections.size() + Acceptors.size();
 	}
 }

@@ -1,8 +1,11 @@
-require 'em_test_helper'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestPure < Test::Unit::TestCase
 
   def setup
+    @host = '127.0.0.1'
     @port = next_port
   end
 
@@ -25,7 +28,7 @@ class TestPure < Test::Unit::TestCase
     2.times do
       assert_raises(exception) do
         EM.run do
-          EM.start_server "127.0.0.1", @port
+          EM.start_server @host, @port
           raise exception
         end
       end
@@ -51,8 +54,8 @@ class TestPure < Test::Unit::TestCase
   def test_connrefused
     assert_nothing_raised do
       EM.run {
-        setup_timeout(2)
-        EM.connect "127.0.0.1", @port, TestConnrefused
+        setup_timeout(windows? ? 4 : 2)
+        EM.connect @host, @port, TestConnrefused
       }
     end
   end
@@ -69,8 +72,8 @@ class TestPure < Test::Unit::TestCase
   def test_connaccepted
     assert_nothing_raised do
       EM.run {
-        EM.start_server "127.0.0.1", @port
-        EM.connect "127.0.0.1", @port, TestConnaccepted
+        EM.start_server @host, @port
+        EM.connect @host, @port, TestConnaccepted
         setup_timeout(1)
       }
     end
@@ -85,4 +88,72 @@ class TestPure < Test::Unit::TestCase
     assert a
   end
 
+  module TLSServer
+    def post_init
+      start_tls
+    end
+
+    def ssl_handshake_completed
+      $server_handshake_completed = true
+    end
+
+    def receive_data(data)
+      $server_received_data = data
+      send_data(data)
+    end
+  end
+
+  module TLSClient
+    def post_init
+      start_tls
+    end
+
+    def ssl_handshake_completed
+      $client_handshake_completed = true
+    end
+
+    def connection_completed
+      send_data('Hello World!')
+    end
+
+    def receive_data(data)
+      $client_received_data = data
+      close_connection
+    end
+
+    def unbind
+      EM.stop_event_loop
+    end
+  end
+
+  def test_start_tls
+    omit("No SSL") unless EM.ssl?
+    $client_handshake_completed, $server_handshake_completed = false, false
+    $client_received_data, $server_received_data = nil, nil
+    EM.run do
+      EM.start_server(@host, 16789, TLSServer)
+      EM.connect(@host, 16789, TLSClient)
+    end
+
+    assert($client_handshake_completed)
+    assert($server_handshake_completed)
+    assert($client_received_data == "Hello World!")
+    assert($server_received_data == "Hello World!")
+  end
+
+  def test_periodic_timer
+    x = 0
+    start, finish = nil
+
+    EM.run {
+      start = Time.now.to_f
+      EM::PeriodicTimer.new(0.2) do
+        x += 1
+        finish = Time.now.to_f
+        EM.stop if x == 4
+      end
+    }
+    assert_in_delta 0.8, (finish - start), TIMEOUT_INTERVAL * 2
+    assert_equal 4, x
+  end
 end

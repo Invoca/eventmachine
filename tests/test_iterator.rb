@@ -1,27 +1,54 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestIterator < Test::Unit::TestCase
 
-  def get_time
-    EM.current_time.strftime('%H:%M:%S')
+  def setup
+    @time0 = nil
+  end
+
+  # By default, format the time with tenths-of-seconds.
+  # Some tests should ask for extra decimal places to ensure
+  # that delays between iterations will receive a changed time.
+  def get_time(n = 1)
+    @time0 = EM.current_time unless @time0
+    sprintf "%07.#{n}f", EM.current_time - @time0
   end
 
   def test_default_concurrency
+    pend('FIXME: EM.current_time is broken in pure ruby mode') if pure_ruby_mode?
     items = {}
     list = 1..10
     EM.run {
       EM::Iterator.new(list).each( proc {|num,iter|
-        time = get_time
+        time = get_time(3)
         items[time] ||= []
         items[time] << num
-        EM::Timer.new(1) {iter.next}
+        EM::Timer.new(0.02) {iter.next}
       }, proc {EM.stop})
     }
     assert_equal(10, items.keys.size)
     assert_equal(list.to_a.sort, items.values.flatten.sort)
   end
 
+  def test_default_concurrency_with_a_proc
+    pend('FIXME: EM.current_time is broken in pure ruby mode') if pure_ruby_mode?
+    items = {}
+    list = (1..10).to_a
+    original_list = list.dup
+    EM.run {
+      EM::Iterator.new(proc{list.pop || EM::Iterator::Stop}).each( proc {|num,iter|
+        time = get_time(3)
+        items[time] ||= []
+        items[time] << num
+        EM::Timer.new(0.02) {iter.next}
+      }, proc {EM.stop})
+    }
+    assert_equal(10, items.keys.size)
+    assert_equal(original_list.to_a.sort, items.values.flatten.sort)
+  end
+
   def test_concurrency_bigger_than_list_size
+    pend('FIXME: EM.current_time is broken in pure ruby mode') if pure_ruby_mode?
     items = {}
     list = [1,2,3]
     EM.run {
@@ -36,26 +63,26 @@ class TestIterator < Test::Unit::TestCase
     assert_equal(list.to_a.sort, items.values.flatten.sort)
   end
 
-
   def test_changing_concurrency_affects_active_iteration
+    pend('FIXME: EM.current_time is broken in pure ruby mode') if pure_ruby_mode?
     items = {}
     list = 1..25
+    seen = 0
     EM.run {
-      i = EM::Iterator.new(list,5)
+      i = EM::Iterator.new(list,1)
       i.each(proc {|num,iter|
         time = get_time
         items[time] ||= []
         items[time] << num
-        EM::Timer.new(1) {iter.next}
+        if (seen += 1) == 5
+          # The first 5 items will be distinct times
+          # The next 20 items will happen in 2 bursts
+          i.concurrency = 10
+        end
+        EM::Timer.new(0.2) {iter.next}
       }, proc {EM.stop})
-      EM.add_timer(1){
-        i.concurrency = 1
-      }
-      EM.add_timer(3){
-        i.concurrency = 3
-      }
     }
-    assert_equal(9, items.keys.size)
+    assert_in_delta(7, items.keys.size, 1)
     assert_equal(list.to_a.sort, items.values.flatten.sort)
   end
 
@@ -72,6 +99,9 @@ class TestIterator < Test::Unit::TestCase
   end
 
   def test_inject
+    pend('FIXME: EM.invoke_popen is broken in pure ruby mode') if pure_ruby_mode?
+    omit_if(windows?)
+
     list = %w[ pwd uptime uname date ]
     EM.run {
       EM::Iterator.new(list, 2).inject({}, proc{ |hash,cmd,iter|

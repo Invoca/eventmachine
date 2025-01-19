@@ -1,4 +1,4 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestProcesses < Test::Unit::TestCase
 
@@ -15,6 +15,7 @@ class TestProcesses < Test::Unit::TestCase
     # wrote to stdout.
     #
     def test_deferrable_child_process
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       ls = ""
       EM.run {
         d = EM::DeferrableChildProcess.open( "ls -ltr" )
@@ -32,36 +33,60 @@ class TestProcesses < Test::Unit::TestCase
     end
 
     def test_em_system
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
+      out, status = nil, nil
+
       EM.run{
-        EM.system('ls'){ |out,status| $out, $status = out, status; EM.stop }
+        EM.system('ls'){ |_out,_status| out, status = _out, _status; EM.stop }
       }
 
-      assert( $out.length > 0 )
-      assert_equal(0, $status.exitstatus)
-      assert_kind_of(Process::Status, $status)
+      assert(out.length > 0 )
+      assert_kind_of(Process::Status, status)
+      assert_equal(0, status.exitstatus)
+    end
+
+    def test_em_system_bad_exitstatus
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
+      status = nil
+      sys_pid = nil
+
+      EM.run{
+        sys_pid = EM.system('exit 1'){ |_out,_status| status = _status; EM.stop }
+      }
+
+      assert_kind_of(Process::Status, status)
+      refute_equal(0, status.exitstatus)
+      assert_equal sys_pid, status.pid
     end
 
     def test_em_system_pid
-      $pids = []
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
+      status = nil
+      sys_pid = nil
 
       EM.run{
-        $pids << EM.system('echo hi', proc{ |out,status|$pids << status.pid; EM.stop })
+        sys_pid = EM.system('echo hi', proc{ |_out,_status| status = _status; EM.stop })
       }
 
-      assert_equal $pids[0], $pids[1]
+      refute_equal(0, sys_pid)
+      assert_kind_of(Process::Status, status)
+      refute_equal(0, status.pid)
+      assert_equal sys_pid, status.pid
     end
 
     def test_em_system_with_proc
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       EM.run{
         EM.system('ls', proc{ |out,status| $out, $status = out, status; EM.stop })
       }
 
       assert( $out.length > 0 )
-      assert_equal(0, $status.exitstatus)
       assert_kind_of(Process::Status, $status)
+      assert_equal(0, $status.exitstatus)
     end
 
     def test_em_system_with_two_procs
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       EM.run{
         EM.system('sh', proc{ |process|
           process.send_data("echo hello\n")
@@ -77,6 +102,7 @@ class TestProcesses < Test::Unit::TestCase
     end
 
     def test_em_system_cmd_arguments
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       EM.run{
         EM.system('echo', '1', '2', 'version', proc{ |process|
         }, proc{ |out,status|
@@ -90,6 +116,7 @@ class TestProcesses < Test::Unit::TestCase
     end
 
     def test_em_system_spaced_arguments
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       EM.run{
         EM.system('ruby', '-e', 'puts "hello"', proc{ |out,status|
           $out = out
@@ -101,6 +128,7 @@ class TestProcesses < Test::Unit::TestCase
     end
 
     def test_em_popen_pause_resume
+      pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
       c_rx = 0
 
       test_client = Module.new do

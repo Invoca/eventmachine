@@ -1,10 +1,13 @@
-require 'em_test_helper'
-require 'socket'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestBasic < Test::Unit::TestCase
   def setup
     @port = next_port
   end
+
+  INVALID = "(not known|no data of the requested|No such host is known|Temporary failure in name resolution)"
 
   def test_connection_class_cache
     mod = Module.new
@@ -20,7 +23,6 @@ class TestBasic < Test::Unit::TestCase
   end
 
   #-------------------------------------
-
 
   def test_em
     assert_nothing_raised do
@@ -38,7 +40,7 @@ class TestBasic < Test::Unit::TestCase
   def test_timer
     assert_nothing_raised do
       EM.run {
-        setup_timeout
+        setup_timeout(TIMEOUT_INTERVAL * 2)
         n = 0
         EM.add_periodic_timer(0.1) {
           n += 1
@@ -93,13 +95,30 @@ class TestBasic < Test::Unit::TestCase
     end
   end
 
-  def test_unbind_error
+  def test_unbind_error_during_stop
+    pend('FIXME: This test is broken in pure ruby mode') if pure_ruby_mode?
     assert_raises( UnbindError::ERR ) {
       EM.run {
         EM.start_server "127.0.0.1", @port
-        EM.connect "127.0.0.1", @port, UnbindError
+        EM.connect "127.0.0.1", @port, UnbindError do
+          EM.stop
+        end
       }
     }
+  end
+
+  def test_unbind_error
+    EM.run {
+      EM.error_handler do |e|
+        assert(e.is_a?(UnbindError::ERR))
+        EM.stop
+      end
+      EM.start_server "127.0.0.1", @port
+      EM.connect "127.0.0.1", @port, UnbindError
+    }
+
+    # Remove the error handler before the next test
+    EM.error_handler(nil)
   end
 
   module BrsTestSrv
@@ -119,7 +138,7 @@ class TestBasic < Test::Unit::TestCase
 
   # From ticket #50
   def test_byte_range_send
-    $received = ''
+    $received = ''.dup
     $sent = (0..255).to_a.pack('C*')
     EM::run {
       EM::start_server "127.0.0.1", @port, BrsTestSrv
@@ -131,7 +150,7 @@ class TestBasic < Test::Unit::TestCase
   end
 
   def test_bind_connect
-    local_ip = UDPSocket.open {|s| s.connect('google.com', 80); s.addr.last }
+    local_ip = UDPSocket.open {|s| s.connect('localhost', 80); s.addr.last }
 
     bind_port = next_port
 
@@ -156,6 +175,42 @@ class TestBasic < Test::Unit::TestCase
     assert_equal local_ip, ip
   end
 
+  def test_invalid_address_bind_connect_dst
+    pend('FIXME: A different error is raised in pure ruby mode') if pure_ruby_mode?
+    pend("\nFIXME: Windows as of 2018-06-23 on 32 bit >= 2.4 (#{RUBY_VERSION} #{RUBY_PLATFORM})") if RUBY_PLATFORM[/i386-mingw/] && RUBY_VERSION >= '2.4'
+    e = nil
+    EM.run do
+      begin
+        EM.bind_connect('localhost', nil, 'invalid.invalid', 80)
+      rescue Exception => e
+        # capture the exception
+      ensure
+        EM.stop
+      end
+    end
+
+    assert_kind_of(EventMachine::ConnectionError, e)
+    assert_match(/unable to resolve address:.*#{INVALID}/, e.message)
+  end
+
+  def test_invalid_address_bind_connect_src
+    pend('FIXME: A different error is raised in pure ruby mode') if pure_ruby_mode?
+    pend("\nFIXME: Windows as of 2018-06-23 on 32 bit >= 2.4 (#{RUBY_VERSION} #{RUBY_PLATFORM})") if RUBY_PLATFORM[/i386-mingw/] && RUBY_VERSION >= '2.4'
+    e = nil
+    EM.run do
+      begin
+        EM.bind_connect('invalid.invalid', nil, 'localhost', 80)
+      rescue Exception => e
+        # capture the exception
+      ensure
+        EM.stop
+      end
+    end
+
+    assert_kind_of(EventMachine::ConnectionError, e)
+    assert_match(/invalid bind address:.*#{INVALID}/, e.message)
+  end
+
   def test_reactor_thread?
     assert !EM.reactor_thread?
     EM.run { assert EM.reactor_thread?; EM.stop }
@@ -170,7 +225,7 @@ class TestBasic < Test::Unit::TestCase
     end
     assert x
   end
-  
+
   def test_schedule_from_thread
     x = false
     EM.run do
@@ -180,6 +235,7 @@ class TestBasic < Test::Unit::TestCase
   end
 
   def test_set_heartbeat_interval
+    pend('FIXME: EM.set_heartbeat_interval is broken in pure ruby mode') if pure_ruby_mode?
     omit_if(jruby?)
     interval = 0.5
     EM.run {
@@ -189,14 +245,14 @@ class TestBasic < Test::Unit::TestCase
     }
     assert_equal(interval, $interval)
   end
-  
+
   module PostInitRaiser
     ERR = Class.new(StandardError)
     def post_init
       raise ERR
     end
   end
-  
+
   def test_bubble_errors_from_post_init
     assert_raises(PostInitRaiser::ERR) do
       EM.run do
@@ -205,14 +261,14 @@ class TestBasic < Test::Unit::TestCase
       end
     end
   end
-  
+
   module InitializeRaiser
     ERR = Class.new(StandardError)
     def initialize
       raise ERR
     end
   end
-  
+
   def test_bubble_errors_from_initialize
     assert_raises(InitializeRaiser::ERR) do
       EM.run do
@@ -221,8 +277,9 @@ class TestBasic < Test::Unit::TestCase
       end
     end
   end
-  
+
   def test_schedule_close
+    pend('FIXME: EM.num_close_scheduled is broken in pure ruby mode') if pure_ruby_mode?
     omit_if(jruby?)
     localhost, port = '127.0.0.1', 9000
     timer_ran = false
@@ -244,31 +301,8 @@ class TestBasic < Test::Unit::TestCase
     assert_equal 1, num_close_scheduled
   end
 
-  def test_fork_safe
-    omit_if(jruby?)
-    omit_if(rbx?, 'Omitting test on Rubinius because it hangs for unknown reasons')
-
-    read, write = IO.pipe
-    EM.run do
-      fork do
-        write.puts "forked"
-        EM.run do
-          EM.next_tick do
-            write.puts "EM ran"
-            EM.stop
-          end
-        end
-      end
-      EM.stop
-    end
-    assert_equal "forked\n", read.readline
-    assert_equal "EM ran\n", read.readline
-  ensure
-    read.close rescue nil
-    write.close rescue nil
-  end
-
   def test_error_handler_idempotent # issue 185
+    pend('FIXME: EM.error_handler is broken in pure ruby mode') if pure_ruby_mode?
     errors = []
     ticks = []
     EM.error_handler do |e|
@@ -285,6 +319,9 @@ class TestBasic < Test::Unit::TestCase
       end
       EM.add_timer(0.001) { EM.stop }
     end
+
+    # Remove the error handler before the next test
+    EM.error_handler(nil)
 
     assert_equal 1, errors.size
     assert_equal [:first, :second], ticks

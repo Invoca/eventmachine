@@ -21,16 +21,22 @@ See the file COPYING for complete licensing information.
 #define __ObjectBindings__H_
 
 
+#if __cplusplus >= 201103L
+#define NO_EXCEPT_FALSE noexcept(false)
+#else
+#define NO_EXCEPT_FALSE
+#endif
+
 class Bindable_t
 {
 	public:
 		static uintptr_t CreateBinding();
 		static Bindable_t *GetObject (const uintptr_t);
-		static map<uintptr_t, Bindable_t*> BindingBag;
+		static std::map<uintptr_t, Bindable_t*> BindingBag;
 
 	public:
 		Bindable_t();
-		virtual ~Bindable_t();
+		virtual ~Bindable_t() NO_EXCEPT_FALSE;
 
 		const uintptr_t GetBinding() {return Binding;}
 

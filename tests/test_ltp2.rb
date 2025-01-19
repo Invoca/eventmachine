@@ -1,4 +1,6 @@
-require 'em_test_helper'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 # TODO!!! Need tests for overlength headers and text bodies.
 
@@ -51,7 +53,7 @@ class TestLineText2 < Test::Unit::TestCase
     attr_reader :lines
     def initialize *args
       super
-      @delim = "A"
+      @delim = "A".dup
       set_delimiter @delim
     end
     def receive_line line
@@ -72,6 +74,30 @@ class TestLineText2 < Test::Unit::TestCase
     assert_equal( ["Linea", "Lineb", "Linec", "Lined"], a.lines )
   end
 
+  class RegexDelimiter
+    include EM::Protocols::LineText2
+    attr_reader :lines
+    def initialize *args
+      super
+      @delim = /[A-D]/
+      set_delimiter @delim
+    end
+    def receive_line line
+      (@lines ||= []) << line
+    end
+  end
+
+  def test_regex_delimiter
+    testdata = %Q(LineaALinebBLinecCLinedD)
+
+    a = RegexDelimiter.new
+    a.receive_data testdata
+    assert_equal( ["Linea", "Lineb", "Linec", "Lined"], a.lines )
+
+    a = RegexDelimiter.new
+    testdata.length.times {|i| a.receive_data( testdata[i...i+1] ) }
+    assert_equal( ["Linea", "Lineb", "Linec", "Lined"], a.lines )
+  end
 
   #--
   # Test two lines followed by an empty line, ten bytes of binary data, then
@@ -129,7 +155,7 @@ Line 4
     def receive_binary_data data
       @n_calls ||= 0
       @n_calls += 1
-      (@body ||= "") << data
+      (@body ||= "".dup) << data
     end
   end
 

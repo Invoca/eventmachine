@@ -1,46 +1,31 @@
-require 'em_test_helper'
+# frozen_string_literal: true
+
+require_relative 'em_test_helper'
 
 class TestSSLMethods < Test::Unit::TestCase
 
-  module ServerHandler
-    def post_init
-      start_tls
-    end
-
-    def ssl_handshake_completed
-      $server_called_back = true
-      $server_cert_value = get_peer_cert
-    end
-  end
-
-  module ClientHandler
-    def post_init
-      start_tls
-    end
-
-    def ssl_handshake_completed
-      $client_called_back = true
-      $client_cert_value = get_peer_cert
-      EM.stop_event_loop
-    end
-  end
+  require_relative 'em_ssl_handlers'
+  include EMSSLHandlers
 
   def test_ssl_methods
-    omit_unless(EM.ssl?)
     omit_if(rbx?)
-    $server_called_back, $client_called_back = false, false
-    $server_cert_value, $client_cert_value = nil, nil
 
-    EM.run {
-      EM.start_server("127.0.0.1", 9999, ServerHandler)
-      EM.connect("127.0.0.1", 9999, ClientHandler)
-    }
+    client_server
+    
+    assert Server.handshake_completed?
+    assert Client.handshake_completed?
 
-    assert($server_called_back)
-    assert($client_called_back)
+    assert Server.cert_value.is_a? NilClass
+    assert Client.cert_value.is_a? String
 
-    assert($server_cert_value.is_a?(NilClass))
-    assert($client_cert_value.is_a?(String))
+    assert Client.cipher_bits > 0
+    assert_equal Client.cipher_bits, Server.cipher_bits
+
+    assert Client.cipher_name.length > 0
+    assert_match(/AES/, Client.cipher_name)
+    assert_equal Client.cipher_name, Server.cipher_name
+
+    assert Client.cipher_protocol.start_with? "TLS"
+    assert_equal Client.cipher_protocol, Server.cipher_protocol
   end
-
-end
+end  if EM.ssl?

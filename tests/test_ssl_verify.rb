@@ -1,82 +1,108 @@
-require 'em_test_helper'
+# frozen_string_literal: true
 
-class TestSslVerify < Test::Unit::TestCase
-  def setup
-    $dir = File.dirname(File.expand_path(__FILE__)) + '/'
-    $cert_from_file = File.read($dir+'client.crt')
-  end
+require_relative 'em_test_helper'
 
-  module Client
-    def connection_completed
-      start_tls(:private_key_file => $dir+'client.key', :cert_chain_file => $dir+'client.crt')
-    end
+class TestSSLVerify < Test::Unit::TestCase
 
-    def ssl_handshake_completed
-      $client_handshake_completed = true
-      close_connection
-    end
+  require_relative 'em_ssl_handlers'
+  include EMSSLHandlers
 
-    def unbind
-      EM.stop_event_loop
-    end
-  end
+  CERT_CONFIG = {
+    # ca_file:          "#{CERTS_DIR}/eventmachine-ca.crt",
+    private_key_file: PRIVATE_KEY_FILE,
+    cert_chain_file:  "#{CERTS_DIR}/em-localhost.crt",
+  }
 
-  module AcceptServer
-    def post_init
-      start_tls(:verify_peer => true)
-    end
+  ENCODED_CERT_CONFIG = {
+    # ca_file:          "#{CERTS_DIR}/eventmachine-ca.crt",
+    private_key_pass: ENCODED_KEY_PASS,
+    private_key_file: ENCODED_KEY_FILE,
+    cert_chain_file:  "#{CERTS_DIR}/em-localhost.crt",
+  }
 
-    def ssl_verify_peer(cert)
-      $cert_from_server = cert
-      true
-    end
 
-    def ssl_handshake_completed
-      $server_handshake_completed = true
-    end
-  end
 
-  module DenyServer
-    def post_init
-      start_tls(:verify_peer => true)
-    end
+  def test_fail_no_peer_cert
+    omit_if(rbx?)
 
-    def ssl_verify_peer(cert)
-      $cert_from_server = cert
-      # Do not accept the peer. This should now cause the connection to shut down without the SSL handshake being completed.
-      false
-    end
+    server = { verify_peer: true, fail_if_no_peer_cert: true,
+      ssl_verify_result: "|RAISE|Verify peer should not get called for a client without a certificate" }
 
-    def ssl_handshake_completed
-      $server_handshake_completed = true
-    end
+    client_server Client, Server, server: server
+
+    refute Client.handshake_completed? unless "TLSv1.3" == Client.cipher_protocol
+    refute Server.handshake_completed?
   end
 
   def test_accept_server
-    omit_unless(EM.ssl?)
     omit_if(rbx?)
-    $client_handshake_completed, $server_handshake_completed = false, false
-    EM.run {
-      EM.start_server("127.0.0.1", 16784, AcceptServer)
-      EM.connect("127.0.0.1", 16784, Client).instance_variable_get("@signature")
-    }
 
-    assert_equal($cert_from_file, $cert_from_server)
-    assert($client_handshake_completed)
-    assert($server_handshake_completed)
+    server = { verify_peer: true, ssl_verify_result: true }
+
+    client_server Client, Server, client: CERT_CONFIG, server: server
+
+    assert_equal CERT_PEM, Server.cert
+    assert Client.handshake_completed?
+    assert Server.handshake_completed?
+  end
+
+  def test_accept_client
+    omit_if(rbx?)
+
+    client = { verify_peer: true, ssl_verify_result: true }
+
+    client_server Client, Server, server: CERT_CONFIG, client: client
+
+    assert_equal CERT_PEM, Client.cert
+    assert Client.handshake_completed?
+    assert Server.handshake_completed?
+  end
+
+  def test_encoded_accept_server
+    omit_if(rbx?)
+
+    server = { verify_peer: true, ssl_verify_result: true }
+
+    client_server Client, Server, client: ENCODED_CERT_CONFIG, server: server
+
+    assert Client.handshake_completed?
+    assert Server.handshake_completed?
+    assert_equal CERT_PEM, Server.cert
+  end
+
+  def test_encoded_accept_client
+    omit_if(rbx?)
+
+    client = { verify_peer: true, ssl_verify_result: true }
+
+    client_server Client, Server, server: ENCODED_CERT_CONFIG, client: client
+
+    assert Client.handshake_completed?
+    assert Server.handshake_completed?
+    assert_equal CERT_PEM, Client.cert
   end
 
   def test_deny_server
-    omit_unless(EM.ssl?)
     omit_if(rbx?)
-    $client_handshake_completed, $server_handshake_completed = false, false
-    EM.run {
-      EM.start_server("127.0.0.1", 16784, DenyServer)
-      EM.connect("127.0.0.1", 16784, Client)
-    }
 
-    assert_equal($cert_from_file, $cert_from_server)
-    assert(!$client_handshake_completed)
-    assert(!$server_handshake_completed)
+    server = { verify_peer: true, ssl_verify_result: false }
+
+    client_server Client, Server, client: CERT_CONFIG, server: server
+
+    assert_equal CERT_PEM, Server.cert
+    refute Client.handshake_completed? unless "TLSv1.3" == Client.cipher_protocol
+    refute Server.handshake_completed?
   end
-end
+
+  def test_deny_client
+    omit_if(rbx?)
+
+    client = { verify_peer: true, ssl_verify_result: false }
+
+    client_server Client, Server, server: CERT_CONFIG, client: client
+
+    refute Client.handshake_completed? unless "TLSv1.3" == Client.cipher_protocol
+    refute Server.handshake_completed?
+    assert_equal CERT_PEM, Client.cert
+  end
+end if EM.ssl?

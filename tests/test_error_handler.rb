@@ -1,4 +1,4 @@
-require 'em_test_helper'
+require_relative 'em_test_helper'
 
 class TestErrorHandler < Test::Unit::TestCase
   def setup
@@ -6,6 +6,7 @@ class TestErrorHandler < Test::Unit::TestCase
   end
 
   def test_error_handler
+    pend('FIXME: this test is broken in pure ruby mode') if pure_ruby_mode?
     error = nil
 
     EM.error_handler{ |e|

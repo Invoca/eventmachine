@@ -21,7 +21,6 @@ See the file COPYING for complete licensing information.
 
 #include <iostream>
 #include <stdexcept>
-using namespace std;
 
 #include <ruby.h>
 #include "mapper.h"
@@ -50,7 +49,7 @@ static VALUE mapper_new (VALUE self, VALUE filename)
 {
 	Mapper_t *m = new Mapper_t (StringValueCStr (filename));
 	if (!m)
-		rb_raise (rb_eException, "No Mapper Object");
+		rb_raise (rb_eStandardError, "No Mapper Object");
 	VALUE v = Data_Wrap_Struct (Mapper, 0, mapper_dt, (void*)m);
 	return v;
 }
@@ -65,17 +64,17 @@ static VALUE mapper_get_chunk (VALUE self, VALUE start, VALUE length)
 	Mapper_t *m = NULL;
 	Data_Get_Struct (self, Mapper_t, m);
 	if (!m)
-		rb_raise (rb_eException, "No Mapper Object");
+		rb_raise (rb_eStandardError, "No Mapper Object");
 
 	// TODO, what if some moron sends us a negative start value?
 	unsigned _start = NUM2INT (start);
 	unsigned _length = NUM2INT (length);
 	if ((_start + _length) > m->GetFileSize())
-		rb_raise (rb_eException, "Mapper Range Error");
+		rb_raise (rb_eStandardError, "Mapper Range Error");
 
 	const char *chunk = m->GetChunk (_start);
 	if (!chunk)
-		rb_raise (rb_eException, "No Mapper Chunk");
+		rb_raise (rb_eStandardError, "No Mapper Chunk");
 	return rb_str_new (chunk, _length);
 }
 
@@ -88,7 +87,7 @@ static VALUE mapper_close (VALUE self)
 	Mapper_t *m = NULL;
 	Data_Get_Struct (self, Mapper_t, m);
 	if (!m)
-		rb_raise (rb_eException, "No Mapper Object");
+		rb_raise (rb_eStandardError, "No Mapper Object");
 	m->Close();
 	return Qnil;
 }
@@ -102,7 +101,7 @@ static VALUE mapper_size (VALUE self)
 	Mapper_t *m = NULL;
 	Data_Get_Struct (self, Mapper_t, m);
 	if (!m)
-		rb_raise (rb_eException, "No Mapper Object");
+		rb_raise (rb_eStandardError, "No Mapper Object");
 	return INT2NUM (m->GetFileSize());
 }
 
@@ -116,6 +115,9 @@ extern "C" void Init_fastfilereaderext()
 	EmModule = rb_define_module ("EventMachine");
 	FastFileReader = rb_define_class_under (EmModule, "FastFileReader", rb_cObject);
 	Mapper = rb_define_class_under (FastFileReader, "Mapper", rb_cObject);
+	// fixes lib/em/streamer.rb:70: warning: undefining the allocator of
+	// T_DATA class EventMachine::FastFileReader::Mapper
+	rb_undef_alloc_func(Mapper);
 
 	rb_define_module_function (Mapper, "new", (VALUE(*)(...))mapper_new, 1);
 	rb_define_method (Mapper, "size", (VALUE(*)(...))mapper_size, 0);

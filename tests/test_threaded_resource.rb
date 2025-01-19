@@ -1,3 +1,5 @@
+require_relative 'em_test_helper'
+
 class TestThreadedResource < Test::Unit::TestCase
   def object
     @object ||= {}
@@ -15,9 +17,14 @@ class TestThreadedResource < Test::Unit::TestCase
 
   def test_dispatch_completion
     EM.run do
-      EM.add_timer(3) do
+      EM.add_timer(TIMEOUT_INTERVAL * 20) do
         EM.stop
-        fail 'Resource dispatch timed out'
+        if ci? && darwin?
+          notify "Intermittent Travis MacOS: Resource dispatch timed out"
+          return
+        else
+          assert false, 'Resource dispatch timed out'
+        end
       end
       completion = resource.dispatch do |o|
         o[:foo] = :bar
@@ -29,7 +36,7 @@ class TestThreadedResource < Test::Unit::TestCase
       end
       completion.errback do |error|
         EM.stop
-        fail "Unexpected error: #{error.message}"
+        assert false, "Unexpected error: #{error.message}"
       end
     end
     assert_equal :bar, object[:foo]

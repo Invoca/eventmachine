@@ -1,4 +1,4 @@
-# About EventMachine  [![Code Climate](https://codeclimate.com/github/eventmachine/eventmachine.png)](https://codeclimate.com/github/eventmachine/eventmachine)
+# About EventMachine  [![Build Status](https://github.com/eventmachine/eventmachine/actions/workflows/workflow.yml/badge.svg)](https://github.com/eventmachine/eventmachine/actions) [![Code Climate Maintainability](https://api.codeclimate.com/v1/badges/e9b0603462905d5b9118/maintainability)](https://codeclimate.com/github/eventmachine/eventmachine/maintainability)
 
 
 ## What is EventMachine ##
@@ -18,12 +18,12 @@ This unique combination makes EventMachine a premier choice for designers of cri
 applications, including Web servers and proxies, email and IM production systems, authentication/authorization
 processors, and many more.
 
-EventMachine has been around since the early 2000s and is a mature and battle tested library.
+EventMachine has been around since the early 2000s and is a mature and battle-tested library.
 
 
 ## What EventMachine is good for? ##
 
- * Scalable event-driven servers. Examples: [Thin](http://code.macournoyer.com/thin/) or [Goliath](https://github.com/postrank-labs/goliath/).
+ * Scalable event-driven servers. Examples: [Thin](https://github.com/macournoyer/thin/) or [Goliath](https://github.com/postrank-labs/goliath/).
  * Scalable asynchronous clients for various protocols, RESTful APIs and so on. Examples: [em-http-request](https://github.com/igrigorik/em-http-request) or [amqp gem](https://github.com/ruby-amqp/amqp).
  * Efficient network proxies with custom logic. Examples: [Proxymachine](https://github.com/mojombo/proxymachine/).
  * File and network monitoring tools. Examples: [eventmachine-tail](https://github.com/jordansissel/eventmachine-tail) and [logstash](https://github.com/logstash/logstash).
@@ -32,8 +32,9 @@ EventMachine has been around since the early 2000s and is a mature and battle te
 
 ## What platforms are supported by EventMachine? ##
 
-EventMachine supports Ruby >= 1.8.7 and <= 2.2 REE, JRuby and **works well on Windows** as well
-as many operating systems from the Unix family (Linux, Mac OS X, BSD flavors).
+EventMachine supports Ruby 2.0.0 and later (see tested versions at 
+[.github/workflows/workflow.yml](.github/workflows/workflow.yml)). It runs on JRuby and **works well on Windows** 
+as well as many operating systems from the Unix family (Linux, Mac OS X, BSD flavors).
 
 
 
@@ -45,7 +46,7 @@ Install it with [RubyGems](https://rubygems.org/)
 
 or add this to your Gemfile if you use [Bundler](http://gembundler.com/):
 
-    gem "eventmachine"
+    gem 'eventmachine'
 
 
 
@@ -54,39 +55,41 @@ or add this to your Gemfile if you use [Bundler](http://gembundler.com/):
 For an introduction to EventMachine, check out:
 
  * [blog post about EventMachine by Ilya Grigorik](http://www.igvita.com/2008/05/27/ruby-eventmachine-the-speed-demon/).
- * [EventMachine Introductions by Dan Sinclair](http://everburning.com/news/eventmachine-introductions/).
+ * [EventMachine Introductions by Dan Sinclair](http://everburning.com/news/eventmachine-introductions.html).
 
 
 ### Server example: Echo server ###
 
 Here's a fully-functional echo server written with EventMachine:
 
-     require 'eventmachine'
+```ruby
+ require 'eventmachine'
 
-     module EchoServer
-       def post_init
-         puts "-- someone connected to the echo server!"
-       end
+ module EchoServer
+   def post_init
+     puts "-- someone connected to the echo server!"
+   end
 
-       def receive_data data
-         send_data ">>>you sent: #{data}"
-         close_connection if data =~ /quit/i
-       end
+   def receive_data data
+     send_data ">>>you sent: #{data}"
+     close_connection if data =~ /quit/i
+   end
 
-       def unbind
-         puts "-- someone disconnected from the echo server!"
-       end
-    end
+   def unbind
+     puts "-- someone disconnected from the echo server!"
+   end
+end
 
-    # Note that this will block current thread.
-    EventMachine.run {
-      EventMachine.start_server "127.0.0.1", 8081, EchoServer
-    }
+# Note that this will block current thread.
+EventMachine.run {
+  EventMachine.start_server "127.0.0.1", 8081, EchoServer
+}
+```
 
 
 ## EventMachine documentation ##
 
-Currently we only have [reference documentation](http://rdoc.info/github/eventmachine/eventmachine/frames) and a [wiki](https://github.com/eventmachine/eventmachine/wiki).
+Currently we only have [reference documentation](http://rubydoc.info/github/eventmachine/eventmachine/frames) and a [wiki](https://github.com/eventmachine/eventmachine/wiki).
 
 
 ## Community and where to get help ##
@@ -105,4 +108,4 @@ Copyright: (C) 2006-07 by Francis Cianfrocca. All Rights Reserved.
 
 ## Alternatives ##
 
-If you are unhappy with EventMachine and want to use Ruby, check out [Celluloid](https://celluloid.io/).
+If you are unhappy with EventMachine and want to use Ruby, check out [Celluloid](https://github.com/celluloid/celluloid).

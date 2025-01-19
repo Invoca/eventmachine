@@ -1,6 +1,8 @@
 module EventMachine
-  class FileNotFoundException < Exception
-  end
+  class FileNotFoundException < Exception ; end
+  class BadParams < Exception ; end
+  class BadCertParams < BadParams ; end
+  class BadPrivateKeyParams < BadParams ;end
 
   # EventMachine::Connection is a class that is instantiated
   # by EventMachine's processing loop whenever a new connection
@@ -100,9 +102,6 @@ module EventMachine
     # in your redefined implementation of receive_data. For a better understanding
     # of this, read through the examples of specific protocol handlers in EventMachine::Protocols
     #
-    # The base-class implementation (which will be invoked only if you didn't override it in your protocol handler)
-    # simply prints incoming data packet size to stdout.
-    #
     # @param [String] data Opaque incoming data.
     # @note Depending on the protocol, buffer sizes and OS networking stack configuration, incoming data may or may not be "a complete message".
     #       It is up to this handler to detect content boundaries to determine whether all the content (for example, full HTTP request)
@@ -114,7 +113,6 @@ module EventMachine
     # @see #send_data
     # @see file:docs/GettingStarted.md EventMachine tutorial
     def receive_data data
-      puts "............>>>#{data.length}"
     end
 
     # Called by EventMachine when the SSL/TLS handshake has
@@ -372,13 +370,31 @@ module EventMachine
     # @option args [String] :cert_chain_file (nil) local path of a readable file that contants  a chain of X509 certificates in
     #                                              the [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail),
     #                                              with the most-resolved certificate at the top of the file, successive intermediate
-    #                                              certs in the middle, and the root (or CA) cert at the bottom.
+    #                                              certs in the middle, and the root (or CA) cert at the bottom. If both
+    #                                              :cert_chain_file and :cert are used, BadCertParams will be raised.
     #
-    # @option args [String] :private_key_file (nil) local path of a readable file that must contain a private key in the [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail).
+    # @option args [String] :cert (nil) a string with the client certificate to use, complete with header and footer. If a cert chain is required, you will have to use the :cert_chain_file option. If both :cert_chain_file and :cert are used, BadCertParams will be raised.
     #
-    # @option args [String] :verify_peer (false)    indicates whether a server should request a certificate from a peer, to be verified by user code.
+    # @option args [String] :private_key_file (nil) local path of a readable file that must contain a private key in the [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail). If both :private_key_file and :private_key are used, BadPrivateKeyParams will be raised. If the Private Key does not match the certificate, InvalidPrivateKey will be raised.
+    #
+    # @option args [String] :private_key (nil) a string, complete with header and footer, that must contain a private key in the [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail). If both :private_key_file and :private_key are used, BadPrivateKeyParams will be raised. If the Private Key does not match the certificate, InvalidPrivateKey will be raised.
+    #
+    # @option args [String] :private_key_pass (nil) a string to use as password to decode :private_key or :private_key_file
+    #
+    # @option args [Boolean] :verify_peer (false)   indicates whether a server should request a certificate from a peer, to be verified by user code.
     #                                               If true, the {#ssl_verify_peer} callback on the {EventMachine::Connection} object is called with each certificate
     #                                               in the certificate chain provided by the peer. See documentation on {#ssl_verify_peer} for how to use this.
+    #
+    # @option args [Boolean] :fail_if_no_peer_cert (false)   Used in conjunction with verify_peer. If set the SSL handshake will be terminated if the peer does not provide a certificate.
+    #
+    #
+    # @option args [String] :cipher_list ("ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH") indicates the available SSL cipher values. Default value is "ALL:!ADH:!LOW:!EXP:!DES-CBC3-SHA:@STRENGTH". Check the format of the OpenSSL cipher string at http://www.openssl.org/docs/apps/ciphers.html#CIPHER_LIST_FORMAT.
+    #
+    # @option args [String] :ecdh_curve (nil)  The curve for ECDHE ciphers. See available ciphers with 'openssl ecparam -list_curves'
+    #
+    # @option args [String] :dhparam (nil)  The local path of a file containing DH parameters for EDH ciphers in [PEM format](http://en.wikipedia.org/wiki/Privacy_Enhanced_Mail) See: 'openssl dhparam'
+    #
+    # @option args [Array] :ssl_version (TLSv1 TLSv1_1 TLSv1_2) indicates the allowed SSL/TLS versions. Possible values are: {SSLv2}, {SSLv3}, {TLSv1}, {TLSv1_1}, {TLSv1_2}.
     #
     # @example Using TLS with EventMachine
     #
@@ -404,15 +420,69 @@ module EventMachine
     #
     # @see #ssl_verify_peer
     def start_tls args={}
-      priv_key, cert_chain, verify_peer = args.values_at(:private_key_file, :cert_chain_file, :verify_peer)
+      priv_key_path   = args[:private_key_file]
+      priv_key        = args[:private_key]
+      priv_key_pass   = args[:private_key_pass]
+      cert_chain_path = args[:cert_chain_file]
+      cert            = args[:cert]
+      verify_peer     = args[:verify_peer]
+      sni_hostname    = args[:sni_hostname]
+      cipher_list     = args[:cipher_list]
+      ssl_version     = args[:ssl_version]
+      ecdh_curve      = args[:ecdh_curve]
+      dhparam         = args[:dhparam]
+      fail_if_no_peer_cert = args[:fail_if_no_peer_cert]
 
-      [priv_key, cert_chain].each do |file|
+      [priv_key_path, cert_chain_path].each do |file|
         next if file.nil? or file.empty?
         raise FileNotFoundException,
         "Could not find #{file} for start_tls" unless File.exist? file
       end
 
-      EventMachine::set_tls_parms(@signature, priv_key || '', cert_chain || '', verify_peer)
+      if !priv_key_path.nil? && !priv_key_path.empty? && !priv_key.nil? && !priv_key.empty?
+        raise BadPrivateKeyParams, "Specifying both private_key and private_key_file not allowed"
+      end
+
+      if !cert_chain_path.nil? && !cert_chain_path.empty? && !cert.nil? && !cert.empty?
+        raise BadCertParams, "Specifying both cert and cert_chain_file not allowed"
+      end
+
+      if (!priv_key_path.nil? && !priv_key_path.empty?) || (!priv_key.nil? && !priv_key.empty?)
+        if (cert_chain_path.nil? || cert_chain_path.empty?) && (cert.nil? || cert.empty?)
+          raise BadParams, "You have specified a private key to use, but not the related cert"
+        end
+      end
+
+      protocols_bitmask = 0
+      if ssl_version.nil?
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_1
+        protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_2
+        if EventMachine.const_defined? :EM_PROTO_TLSv1_3
+          protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_3
+        end
+      else
+        [ssl_version].flatten.each do |p|
+          case p.to_s.downcase
+          when 'sslv2'
+            protocols_bitmask |= EventMachine::EM_PROTO_SSLv2
+          when 'sslv3'
+            protocols_bitmask |= EventMachine::EM_PROTO_SSLv3
+          when 'tlsv1'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1
+          when 'tlsv1_1'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_1
+          when 'tlsv1_2'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_2
+          when 'tlsv1_3'
+            protocols_bitmask |= EventMachine::EM_PROTO_TLSv1_3
+          else
+            raise("Unrecognized SSL/TLS Protocol: #{p}")
+          end
+        end
+      end
+
+      EventMachine::set_tls_parms(@signature, priv_key_path || '', priv_key || '', priv_key_pass || '', cert_chain_path || '', cert || '', verify_peer, fail_if_no_peer_cert, sni_hostname || '', cipher_list || '', ecdh_curve || '', dhparam || '', protocols_bitmask)
       EventMachine::start_tls @signature
     end
 
@@ -488,6 +558,21 @@ module EventMachine
       EventMachine::get_peer_cert @signature
     end
 
+    def get_cipher_bits
+      EventMachine::get_cipher_bits @signature
+    end
+
+    def get_cipher_name
+      EventMachine::get_cipher_name @signature
+    end
+
+    def get_cipher_protocol
+      EventMachine::get_cipher_protocol @signature
+    end
+
+    def get_sni_hostname
+      EventMachine::get_sni_hostname @signature
+    end
 
     # Sends UDP messages.
     #
@@ -707,6 +792,11 @@ module EventMachine
     # @see #resume
     def paused?
       EventMachine::connection_paused? @signature
+    end
+
+    # @return [Boolean] true if the connect was watch only
+    def watch_only?
+      EventMachine::watch_only? @signature
     end
   end
 end
